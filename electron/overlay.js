@@ -172,8 +172,8 @@ function matchTemplate(region,asset,scales){
   let best=1e9;
   for(const S of scales){
     const T=scaleRGBA(asset,S,S);
-    for(let oy=-Math.floor(S*0.2);oy<=region.height-S*0.4;oy+=4)
-      for(let ox=-Math.floor(S*0.15);ox<=region.width-S*0.4;ox+=4){
+    for(let oy=-Math.floor(S*0.2);oy<=region.height-S*0.4;oy+=3)
+      for(let ox=-Math.floor(S*0.15);ox<=region.width-S*0.4;ox+=3){
         let sum=0,n=0;
         for(let ty=0;ty<S;ty+=2)for(let tx=0;tx<S;tx+=2){
           const ti=(ty*S+tx)*4;if(T.data[ti+3]<140)continue;
@@ -189,12 +189,16 @@ function matchTemplate(region,asset,scales){
 }
 // region 에서 teamIds 6마리 중 활성 상대 식별. 절대점수 낮고 2위와 격차 충분할 때만 채택.
 // 임계(ABS_THR/MARGIN_MIN)는 합성 프레임 2개로 잡은 잠정값 — 실전 캡처로 튜닝 필요.
-const ABS_THR=6500,MARGIN_MIN=0.15;
+const ABS_THR=6500,MARGIN_MIN=0.15,TARGET_BARH=30;
 function identifyOppIcon(region,barH,teamIds){
   ensureAssets();
   const cand=assetList.filter(a=>teamIds.includes(a.id));
   if(!cand.length)return null;
-  const scales=[1.5,1.8,2.1,2.5,3.0].map(k=>Math.max(24,Math.round(barH*k)));
+  // 해상도 무관 상수시간: 아이콘 영역을 고정 크기로 축소(bar 높이→TARGET) 후 매칭.
+  // 720ms→~60ms(약 12배), 마진도 커짐(노이즈 감소). 4K 캡처여도 동일 비용.
+  const f=Math.min(1,TARGET_BARH/Math.max(1,barH));
+  if(f<1)region=scaleRGBA(region,Math.max(8,Math.round(region.width*f)),Math.max(8,Math.round(region.height*f)));
+  const scales=[1.5,1.8,2.1,2.5,3.0].map(k=>Math.max(20,Math.round(TARGET_BARH*k)));
   const scored=cand.map(a=>({id:a.id,score:matchTemplate(region,a.img,scales)})).sort((x,y)=>x.score-y.score);
   const b=scored[0],s=scored[1];
   if(b.score<ABS_THR&&(!s||s.score-b.score>b.score*MARGIN_MIN))return {id:b.id,score:b.score};
