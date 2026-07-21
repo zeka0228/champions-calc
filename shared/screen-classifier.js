@@ -133,10 +133,43 @@ function limeBarBottomLeft(img,rect){
   return {x0:bx0,y0:ay0,x1:bx1,y1:ay1};
 }
 
+// 선출 화면 상대 카드 6개 검출 (게임영역 기준). matcher.detectCards의 rect 인지 포트.
+// 반환 {xL,xR,bands:[[y0,y1],...]} 은 전부 원본 절대 픽셀 → matcher.extractSprite(img,{xL,xR},band) 로 바로 사용.
+function detectSelectCards(img,rect){
+  rect=rect||fullRect(img);
+  const {x0,y0,w,h}=rect;
+  const colCnt=new Int32Array(w);
+  for(let y=Math.floor(h*0.05);y<h*0.95;y+=4)
+    for(let x=Math.floor(w*0.65);x<w;x+=2){
+      const[r,g,b]=px(img,x0+x,y0+y);if(isMagenta(r,g,b))colCnt[x]++;
+    }
+  let xL=-1,xR=-1;const thr=h*0.9/4*0.25;
+  for(let x=Math.floor(w*0.65);x<w;x++){if(colCnt[x]>thr){if(xL<0)xL=x;xR=x;}}
+  if(xL<0)return null;
+  const probe=x0+Math.floor(xL+(xR-xL)*0.04);
+  const bands=[];let s=-1;
+  for(let y=0;y<h;y++){
+    const[r,g,b]=px(img,probe,y0+y);
+    if(isMagenta(r,g,b)){if(s<0)s=y;}
+    else{if(s>=0&&y-s>h*0.04)bands.push([y0+s,y0+y]);s=-1;}
+  }
+  if(s>=0&&h-s>h*0.04)bands.push([y0+s,y0+h]);
+  if(bands.length<3)return null;
+  const hs=bands.map(b=>b[1]-b[0]).sort((a,b)=>a-b);
+  const med=hs[Math.floor(hs.length/2)];
+  const cards=bands.filter(b=>{const hh=b[1]-b[0];return hh>med*0.7&&hh<med*1.3;});
+  if(cards.length<3)return null;
+  return {xL:x0+xL,xR:x0+xR,bands:cards.slice(0,6)};
+}
+
 // classify 결과에 따라 OCR/매칭 영역을 동적으로 산출. box 는 원본 프레임 절대 픽셀.
 function detectRegions(img,screen,rect){
   rect=rect||fullRect(img);
   const out={};
+  if(screen==="select"){
+    const cards=detectSelectCards(img,rect);
+    if(cards)out.cards=cards;  // matcher.extractSprite(img,{xL,xR},band) 로 소비
+  }
   if(screen==="battle"){
     const opp=magentaBarTopRight(img,rect);
     if(opp){
@@ -205,6 +238,6 @@ const CROPS={
   myName:{x:0.056,y:0.846,w:0.168,h:0.052},
 };
 
-return {analyze,classify,detectGameRect,detectRegions,frameHash,hashDiff,CROPS,
+return {analyze,classify,detectGameRect,detectRegions,detectSelectCards,frameHash,hashDiff,CROPS,
         isMagenta,isPurple,isLime};
 });
