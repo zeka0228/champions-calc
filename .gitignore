@@ -1,3 +1,6 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# overlay(Electron) 의존성 — package.json 추가로 생성됨
+node_modules/

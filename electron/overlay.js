@@ -1,7 +1,10 @@
 // overlay.js — 오버레이 렌더러: 캡처 루프 → 화면 분류 → 인식 → HUD
 const {ipcRenderer}=require("electron");
+// nodeIntegration 렌더러엔 module이 정의돼 있어 UMD 모듈들이 window에 안 붙음(module.exports로 감).
+// → window 전역 대신 require로 로드 (matcher.js 등 원본 무수정). data/spriteindex는 window 직접 할당이라 그대로 사용.
 const DB=window.DB;
-const E=window.Engine,A=window.Analyzer,SC=window.ScreenClassifier,SM=window.SpriteMatcher;
+const E=require("../engine.js"),A=require("../analyzer.js"),
+      SC=require("../shared/screen-classifier.js"),SM=require("../matcher.js");
 E.init(DB);
 
 // ===== 실시간 채용률 (live 우선, 6시간 캐시, 실패 시 내장 폴백) =====
