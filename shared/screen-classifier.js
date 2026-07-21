@@ -1,6 +1,7 @@
 // screen-classifier.js — 프레임이 어떤 게임 화면인지 빠르게 분류 (순수 로직, Node+브라우저 겸용)
 // 반환: 'select' (선출 화면) | 'battle' (배틀 커맨드 화면) | 'other'
-// ⚠ 임계값은 BlueStacks 2560x1392 스크린샷 기준 1차 설정 — 실픽셀 검증(M1)에서 튜닝 예정
+// ✅ 실프레임 검증(M1, 2026-07-21): 실제 캡처 2559x1439(16:9)에서 classify() 선출/배틀 100% 정확.
+//    임계값은 비율 기반이라 해상도 무관. CROPS만 실측으로 소폭 보정(오차 클러터 제거).
 (function(root,factory){
   if(typeof module!=="undefined"&&module.exports)module.exports=factory();
   else root.ScreenClassifier=factory();
@@ -80,9 +81,10 @@ function hashDiff(a,b){
 }
 
 // 배틀 화면 크롭 좌표 (화면 비율 기준) — OCR 대상 영역
+// 실프레임(2559x1439) 측정 보정: 스프라이트 썸네일·성별 아이콘 제외, 이름 텍스트에 밀착
 const CROPS={
-  oppName:{x:0.72,y:0.030,w:0.20,h:0.055},  // 우상단 상대 이름
-  myName:{x:0.055,y:0.845,w:0.16,h:0.05},   // 좌하단 내 이름
+  oppName:{x:0.790,y:0.026,w:0.158,h:0.060},  // 우상단 상대 이름 (스프라이트 우측부터, ♀ 아이콘 앞까지)
+  myName:{x:0.056,y:0.846,w:0.168,h:0.052},   // 좌하단 내 이름
 };
 
 return {classify,frameHash,hashDiff,CROPS,isMagenta,isPurple};
