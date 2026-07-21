@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>포챔스 오버레이</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden;
+  font-family:'Segoe UI','Malgun Gothic',sans-serif;font-size:13px;color:#e8edf2;
+  -webkit-user-select:none;width:100vw;height:100vh}
+#hud{position:fixed;top:60px;left:16px;width:290px;max-height:85vh;overflow:hidden auto;
+  background:rgba(13,17,22,.86);border:1px solid #2e3947;border-radius:10px;padding:10px;
+  backdrop-filter:blur(2px);display:none}
+#hud.on{display:block}
+#hud h3{font-size:12px;color:#93a1b0;margin:0 0 6px;letter-spacing:.05em}
+#dragbar{cursor:move;padding:4px 0;color:#4da3ff;font-weight:700;font-size:12px;display:flex;gap:6px;align-items:center}
+#mode{background:#222a35;border-radius:4px;padding:1px 7px;font-size:11px}
+.roleRow{display:flex;gap:8px;align-items:center;border-top:1px solid #232c37;padding:5px 0}
+.roleRow img{width:34px;height:34px;background:#1a2028;border-radius:6px}
+.roleRow .nm{font-weight:700}
+.roleRow .rl{font-size:12px}
+.rl.phys{color:#ff8c5d}.rl.spec{color:#6db8ff}.rl.wall{color:#4ade80}.rl.sup{color:#facc15}
+.tags{font-size:11px;color:#93a1b0}
+.spd{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
+.spd span{padding:2px 7px;border-radius:4px;font-size:11px;background:#222a35}
+.spd .win{background:#123b26;color:#4ade80}.spd .lose{background:#3f1a1f;color:#ff5d5d}.spd .tie{background:#3a3312;color:#facc15}
+.ko1{color:#ff5d5d;font-weight:700}.ko2{color:#facc15}.ko3{color:#93a1b0}
+.dmgRow{display:grid;grid-template-columns:1fr auto;gap:4px;border-top:1px solid #232c37;padding:3px 0;font-size:12px}
+.small{font-size:11px;color:#93a1b0}
+#toast{position:fixed;bottom:24px;left:16px;background:rgba(13,17,22,.86);border:1px solid #2e3947;
+  border-radius:8px;padding:6px 12px;font-size:12px;color:#93a1b0;display:none}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="dragbar">⬤ 포챔스 오버레이 <span id="mode">대기</span><span class="small" id="conf"></span></div>
+  <div id="content"></div>
+</div>
+<div id="toast"></div>
+<video id="cap" style="display:none" autoplay muted></video>
+<canvas id="work" style="display:none"></canvas>
+
+<script src="../data.js"></script>
+<script src="../spriteindex.js"></script>
+<script src="../matcher.js"></script>
+<script src="../engine.js"></script>
+<script src="../analyzer.js"></script>
+<script src="../shared/screen-classifier.js"></script>
+<script src="overlay.js"></script>
+</body>
+</html>

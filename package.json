@@ -1,0 +1,12 @@
+{
+  "name": "pochamps-overlay",
+  "version": "0.1.0",
+  "description": "포켓몬 챔피언스 오버레이 어시스턴트 (에뮬레이터 무관)",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
