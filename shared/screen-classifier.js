@@ -173,9 +173,16 @@ function detectRegions(img,screen,rect){
   if(screen==="battle"){
     const opp=magentaBarTopRight(img,rect);
     if(opp){
-      const bw=opp.x1-opp.x0;
-      // ♀ 아이콘이 붙는 우측 6% 트림(한글 화이트리스트로도 걸러지지만 여유)
+      const bw=opp.x1-opp.x0,bh=opp.y1-opp.y0;
       out.oppName={x0:opp.x0,y0:opp.y0,x1:opp.x1-Math.floor(bw*0.06),y1:opp.y1,src:"anchor"};
+      // 상대 이름바에 얹힌 2D 도감 스프라이트 아이콘 영역(바 기준 상대좌표 → 프레임 독립).
+      // 이름 OCR이 게임 폰트에서 불가(ERR-001) → 이 아이콘을 선출 6마리와 템플릿 매칭해 활성 상대 식별.
+      out.oppIcon={
+        x0:Math.max(rect.x0,Math.round(opp.x0-bh*1.1)),
+        y0:Math.max(rect.y0,Math.round(opp.y0-bh*0.5)),
+        x1:Math.min(rect.x0+rect.w,Math.round(opp.x0+bh*2.7)),
+        y1:Math.min(rect.y0+rect.h,Math.round(opp.y1+bh*1.5)),
+        barH:bh,src:"anchor"};
     }
     const my=limeBarBottomLeft(img,rect);
     if(my){

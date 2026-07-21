@@ -87,22 +87,37 @@ async function tick(force){
   const h=SC.frameHash(f.img);
   if(!force&&state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01)return; // 정지 화면 스킵
   state.lastHash=h;
-  const cls=SC.classify(f.img);
-  $("mode").textContent={select:"선출",battle:"배틀",other:"대기"}[cls.screen];
-  $("conf").textContent=cls.conf?Math.round(cls.conf*100)+"%":"";
-  if(cls.screen==="select")await onSelect(f);
-  else if(cls.screen==="battle")await onBattle(f);
+  const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
+  state.lastScreen=a.screen;
+  $("mode").textContent={select:"선출",battle:"배틀",other:"대기"}[a.screen];
+  $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
+  if(a.lowRes)toast(`캡처가 작아 인식 정확도 저하 가능 (게임영역 ${a.rect.w}px) — 고해상도 캡처 권장`);
+  if(a.screen==="select")await onSelect(f,a);
+  else if(a.screen==="battle")await onBattle(f,a);
 }
 setInterval(()=>tick(false),1200);
 
 // ===== 선출 화면: 상대 6마리 매칭 → 역할 추정 =====
-async function onSelect(f){
+// 프레임 독립: analyze()가 게임영역 기준으로 검출한 카드 지오메트리(절대 좌표)를
+// matcher.extractSprite 로 소비 (matcher.js 원본 무수정).
+async function onSelect(f,a){
   state.busy=true;
   try{
     ensureAssets();
-    const res=SM.recognizeTeam({data:f.img.data,width:f.img.width,height:f.img.height},assetList);
-    if(res){
-      const ids=res.map(r=>SM.decide(r)).map(d=>d?d.id:null);
+    const cards=a.regions.cards;
+    if(cards){
+      const img={data:f.img.data,width:f.img.width,height:f.img.height};
+      const geo={xL:cards.xL,xR:cards.xR};
+      const ids=[];
+      for(const band of cards.bands){
+        const region=SM.extractSprite(img,geo,band);
+        if(!region){ids.push(null);continue;}
+        const edge=SM.extractSpriteEdge(img,geo,band);
+        const ranked=SM.matchAll(region,edge,assetList);
+        const byCorr=[...ranked].sort((x,y)=>y.corr-x.corr);
+        const d=SM.decide({best:ranked[0],bestCorr:byCorr[0]});
+        ids.push(d?d.id:null);
+      }
       const good=ids.filter(Boolean);
       if(good.length>=3){
         state.oppTeam=good;
@@ -129,50 +144,77 @@ function renderSelect(){
   }
 }
 
-// ===== 배틀 화면: 상대 이름 OCR → 선공/타수 =====
-let worker=null,ocrBusy=false;
-async function ensureWorker(){
-  if(worker)return worker;
-  worker=await Tesseract.createWorker("kor");
-  return worker;
+// ===== 배틀 화면: 이름바 2D 아이콘 → 선출 6마리 템플릿 매칭 → 활성 상대 =====
+// 게임 이름 폰트는 OCR 불가(ERR-001). 대신 이름바에 얹힌 2D 도감 스프라이트 아이콘을
+// 선출에서 잡은 6마리와 "마스크 멀티스케일 템플릿 매칭". 후보가 6마리뿐이라 부분 가림·
+// 배경 혼재에도 강하고 저렴. (실검증: 불카모스 4354 vs 2위 11829, 격차 3배)
+let battleBusy=false;
+// 절대 박스 {x0,y0,x1,y1} 를 이미지 객체로 크롭
+function cropRegionImg(f,box){
+  const W=f.img.width,H=f.img.height,d=f.img.data;
+  const x0=Math.max(0,box.x0|0),y0=Math.max(0,box.y0|0),x1=Math.min(W,box.x1|0),y1=Math.min(H,box.y1|0);
+  const w=Math.max(1,x1-x0),h=Math.max(1,y1-y0),out=new Uint8Array(w*h*4);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const si=((y0+y)*W+(x0+x))*4,di=(y*w+x)*4;
+    out[di]=d[si];out[di+1]=d[si+1];out[di+2]=d[si+2];out[di+3]=255;}
+  return {data:out,width:w,height:h};
 }
-function cropCanvas(f,c){
-  const cv=document.createElement("canvas");
-  const W=f.img.width,H=f.img.height;
-  cv.width=Math.floor(W*c.w);cv.height=Math.floor(H*c.h);
-  cv.getContext("2d").drawImage(f.cv,Math.floor(W*c.x),Math.floor(H*c.y),cv.width,cv.height,0,0,cv.width,cv.height);
-  return cv;
+function scaleRGBA(a,w,h){
+  const out=new Uint8Array(w*h*4);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const sx=Math.min(a.width-1,(x*a.width/w)|0),sy=Math.min(a.height-1,(y*a.height/h)|0);
+    const si=(sy*a.width+sx)*4,di=(y*w+x)*4;
+    out[di]=a.data[si];out[di+1]=a.data[si+1];out[di+2]=a.data[si+2];out[di+3]=a.data[si+3];
+  }
+  return {data:out,width:w,height:h};
 }
-const norm=s=>(s||"").replace(/[^가-힣A-Za-z0-9]/g,"");
-function lev(a,b){
-  const m=a.length,n=b.length,d=Array.from({length:m+1},(_,i)=>[i,...Array(n).fill(0)]);
-  for(let j=1;j<=n;j++)d[0][j]=j;
-  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)
-    d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
-  return d[m][n];
+// 알파(>140) 마스크 템플릿을 region 위에서 스케일·위치 탐색 → 최소 MSE
+function matchTemplate(region,asset,scales){
+  let best=1e9;
+  for(const S of scales){
+    const T=scaleRGBA(asset,S,S);
+    for(let oy=-Math.floor(S*0.2);oy<=region.height-S*0.4;oy+=4)
+      for(let ox=-Math.floor(S*0.15);ox<=region.width-S*0.4;ox+=4){
+        let sum=0,n=0;
+        for(let ty=0;ty<S;ty+=2)for(let tx=0;tx<S;tx+=2){
+          const ti=(ty*S+tx)*4;if(T.data[ti+3]<140)continue;
+          const rx=ox+tx,ry=oy+ty;if(rx<0||ry<0||rx>=region.width||ry>=region.height)continue;
+          const ri=(ry*region.width+rx)*4;
+          const dr=region.data[ri]-T.data[ti],dg=region.data[ri+1]-T.data[ti+1],db=region.data[ri+2]-T.data[ti+2];
+          sum+=dr*dr+dg*dg+db*db;n++;
+        }
+        if(n<150)continue;const sc=sum/n;if(sc<best)best=sc;
+      }
+  }
+  return best;
 }
-function matchName(txt){
-  const t=norm(txt);if(!t)return null;
-  // 1순위: 선출에서 잡아둔 6마리 중 최근접
-  const pool=state.oppTeam.length?state.oppTeam.map(id=>[id,DB.creatures[id].ko]):Object.entries(DB.creatures).filter(([,c])=>c.form==="base").map(([id,c])=>[id,c.ko]);
-  let best=null,bd=1e9;
-  for(const[id,ko]of pool){const d=lev(t,norm(ko));if(d<bd){bd=d;best=id;}}
-  return bd<=Math.max(1,Math.floor(norm(best?DB.creatures[best].ko:"").length*0.4))?best:null;
+// region 에서 teamIds 6마리 중 활성 상대 식별. 절대점수 낮고 2위와 격차 충분할 때만 채택.
+// 임계(ABS_THR/MARGIN_MIN)는 합성 프레임 2개로 잡은 잠정값 — 실전 캡처로 튜닝 필요.
+const ABS_THR=6500,MARGIN_MIN=0.15;
+function identifyOppIcon(region,barH,teamIds){
+  ensureAssets();
+  const cand=assetList.filter(a=>teamIds.includes(a.id));
+  if(!cand.length)return null;
+  const scales=[1.5,1.8,2.1,2.5,3.0].map(k=>Math.max(24,Math.round(barH*k)));
+  const scored=cand.map(a=>({id:a.id,score:matchTemplate(region,a.img,scales)})).sort((x,y)=>x.score-y.score);
+  const b=scored[0],s=scored[1];
+  if(b.score<ABS_THR&&(!s||s.score-b.score>b.score*MARGIN_MIN))return {id:b.id,score:b.score};
+  return null;
 }
-async function onBattle(f){
-  if(ocrBusy)return;ocrBusy=true;state.busy=true;
+async function onBattle(f,a){
+  if(battleBusy)return;battleBusy=true;state.busy=true;
   try{
-    const w=await ensureWorker();
-    const {data}=await w.recognize(cropCanvas(f,SC.CROPS.oppName));
-    const id=matchName(data.text);
-    if(id&&id!==state.oppCur){
-      state.oppCur=id;
-      await fetchLive(baseOf(id));
-      renderBattle();
-      toast("상대: "+DB.creatures[id].ko);
+    const R=a.regions;
+    if(R.oppIcon&&state.oppTeam.length){
+      const region=cropRegionImg(f,R.oppIcon);
+      const barH=R.oppIcon.barH||Math.round((R.oppIcon.y1-R.oppIcon.y0)/3);
+      const r=identifyOppIcon(region,barH,state.oppTeam);
+      if(r&&r.id!==state.oppCur){
+        state.oppCur=r.id;await fetchLive(baseOf(r.id));renderBattle();
+        toast("상대: "+DB.creatures[r.id].ko);
+      }
     }
-  }catch(err){toast("OCR 오류: "+err.message);}
-  ocrBusy=false;state.busy=false;
+  }catch(err){toast("상대 인식 오류: "+err.message);}
+  battleBusy=false;state.busy=false;
 }
 function renderBattle(){
   const el=$("content");
