@@ -94,11 +94,18 @@ async function tick(force){
   if(!force&&state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01)return; // 정지 화면 스킵
   state.lastHash=h;
   const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
-  state.lastScreen=a.screen;
-  $("mode").textContent={select:"선출",battle:"배틀",other:"대기"}[a.screen];
+  const prev=state.lastScreen;state.lastScreen=a.screen;
+  $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
   $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
   if(a.lowRes)toast(`캡처가 작아 인식 정확도 저하 가능 (게임영역 ${a.rect.w}px) — 고해상도 캡처 권장`);
-  if(a.screen==="select")await onSelect(f,a);
+  if(a.screen==="matchmaking"){
+    if(prev!=="matchmaking"){ // 새 매치 진입 1회 → 선출 잠금 자동 해제
+      state.oppLocked=false;state.oppCur=null;state.oppTeam=[];
+      $("content").innerHTML='<div class="small">매칭 중… 선출 화면을 기다립니다</div>';
+      toast("새 매치 감지 — 선출 잠금 해제");
+    }
+  }
+  else if(a.screen==="select")await onSelect(f,a);
   else if(a.screen==="battle")await onBattle(f,a);
 }
 setInterval(()=>tick(false),1200);

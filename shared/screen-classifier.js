@@ -18,6 +18,8 @@ const isMagenta=(r,g,b)=>r>70&&r-g>45&&r-b>15&&g<120;
 const isPurple=(r,g,b)=>b>80&&b-g>30&&r>40&&r<160&&g<110;
 // 라임 초록(내 이름판 HP바 테두리)
 const isLime=(r,g,b)=>g>150&&g-r>30&&g-b>60;
+// 노랑(매칭 대기 스피너 = 몬스터볼 아이콘)
+const isYellow=(r,g,b)=>r>170&&g>150&&b<120&&r-b>60&&g-b>40;
 // 거의 검정(레터박스)
 const isDark=(r,g,b)=>r<40&&g<40&&b<40;
 
@@ -75,6 +77,13 @@ function rightBandCount(img,rect){
 
 function classify(img,rect){
   rect=rect||fullRect(img);
+  // 0) 매칭 대기/완료: 중앙을 큰 보라 모달이 덮고(매칭중·완료 공통, 가운데 글자만 다름) 노란 스피너 존재.
+  //    실측: 매칭 보라0.94/노랑0.11 vs 선출 0.07/0 · 배틀 0.18/0.01 → 두 조건 동시로 오검출 방지.
+  const centerPurple=ratio(img,rect,0.30,0.70,0.38,0.62,isPurple);
+  if(centerPurple>0.5){
+    const centerYellow=ratio(img,rect,0.44,0.56,0.30,0.50,isYellow);
+    if(centerYellow>0.03)return {screen:"matchmaking",centerPurple,centerYellow,conf:Math.min(1,centerPurple)};
+  }
   // 1) 선출: 우측 자홍 카드 밴드 4개 이상 + 좌측 보라 파티 카드 존재
   const bands=rightBandCount(img,rect);
   if(bands>=4){
