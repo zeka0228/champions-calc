@@ -167,6 +167,26 @@ function candByTypes(types,typeOf,assets){
   return f.length>=1?f:assets;
 }
 
+// 선출 화면 상대 카드용 타입 검출: 타입 아이콘이 카드 우측 상단, 성별은 그 아래 → 위쪽 절반만 보면
+// 성별 자동 배제. 배경은 자홍(magenta)이라 그 색만 배제(Fire 빨강은 isMagenta에 걸리므로 예측자 대신
+// 샘플색 거리로 배제). geo={xL,xR}, band=[y0,y1] (detectSelectCards 결과). ✅ 실선출 프레임 검출 정확.
+function detectSelectTypes(img,geo,band){
+  const xL=geo.xL,xR=geo.xR,cw=xR-xL,bh=band[1]-band[0];if(cw<20||bh<20)return [];
+  let MR=0,MG=0,MB=0,mn=0; // 자홍 배경 샘플 = 카드 하단 우측(성별 아래)
+  for(let x=xL+Math.round(cw*0.80);x<xR;x++)for(let y=band[0]+Math.round(bh*0.80);y<band[1]-2;y++){const p=px(img,x,y);MR+=p[0];MG+=p[1];MB+=p[2];mn++;}
+  const mag=mn?[MR/mn,MG/mn,MB/mn]:[110,25,50];
+  const sx0=xL+Math.round(cw*0.60),sx1=Math.min(img.width,xR+8),sy0=band[0]+Math.round(bh*0.04),sy1=band[0]+Math.round(bh*0.50);
+  const votes={};
+  for(let x=sx0;x<sx1;x++)for(let y=sy0;y<sy1;y++){const[r,g,b]=px(img,x,y);
+    if(Math.abs(r-mag[0])+Math.abs(g-mag[1])+Math.abs(b-mag[2])<58)continue; // 자홍 카드 배경 배제
+    if(b>195&&b-r>150&&g<118)continue;                    // ♂ 성별 파랑
+    if(r>200&&g>185&&b>130)continue; if(r>200&&g>200&&b>200)continue; if(r+g+b<55)continue; // 크림/흰/검
+    const t=nearestType(r,g,b);if(t)votes[t]=(votes[t]||0)+1;
+  }
+  const arr=Object.entries(votes).sort((a,b)=>b[1]-a[1]);const m=arr.length?arr[0][1]:0;
+  return arr.filter(([t,v],i)=>i===0?v>=25:v>=Math.max(30,m*0.42)).slice(0,2).map(x=>x[0]);
+}
+
 // 게임영역이 낮은 해상도로 캡처되면(예: 에뮬 창이 화면에 작게 표시) 아이콘이 작아져 추출 파라미터가
 // 안 맞고 매칭이 무너진다(실측: 1600폭 0/6, 1280폭 2/6). 아이콘을 튜닝 스케일(~네이티브)로 되돌리도록
 // 게임영역만 최근접 업스케일 → 복구(실측: 1600 5/6, 1280 6/6). 네이티브 고해상도면 그대로 통과.
@@ -209,5 +229,5 @@ function recognize(img,rect,matcher,assets,creatures){
 // 팀 서명(순서 무관 종족 집합) — dedup 키
 function signature(mons){return mons.filter(Boolean).slice().sort().join(",");}
 
-return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,detectTypes,recognize,signature};
+return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,detectTypes,detectSelectTypes,candByTypes,recognize,signature};
 });

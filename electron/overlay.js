@@ -129,7 +129,9 @@ async function onSelect(f,a){
         const region=SM.extractSprite(img,geo,band);
         if(!region){ids.push(null);continue;}
         const edge=SM.extractSpriteEdge(img,geo,band);
-        const ranked=SM.matchAll(region,edge,assetList);
+        const types=TR.detectSelectTypes(img,geo,band); // 선출 카드 타입 → 후보 선필터(팀등록과 동일 방식)
+        const cand=TR.candByTypes(types,id=>{const c=DB.creatures[id];return c&&c.types?c.types:[];},assetList);
+        const ranked=SM.matchAll(region,edge,cand);
         const byCorr=[...ranked].sort((x,y)=>y.corr-x.corr);
         const d=SM.decide({best:ranked[0],bestCorr:byCorr[0]});
         ids.push(d?d.id:null);
