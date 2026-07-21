@@ -3,7 +3,6 @@ const {app,BrowserWindow,ipcMain,desktopCapturer,globalShortcut,screen}=require(
 const path=require("path");
 
 let overlayWin=null,controlWin=null;
-let interactive=false;
 
 // 주요 에뮬레이터 자동 감지 (창 제목) — 그 외는 목록에서 수동 선택
 const EMU_PATTERNS=[/bluestacks/i,/ldplayer/i,/nox/i,/mumu/i,/memu/i,/google play games/i,/녹스/,/미뮤/];
@@ -44,15 +43,11 @@ ipcMain.handle("list-sources",async()=>{
 ipcMain.on("to-overlay",(e,ch,payload)=>{if(overlayWin)overlayWin.webContents.send(ch,payload);});
 ipcMain.on("to-control",(e,ch,payload)=>{if(controlWin)controlWin.webContents.send(ch,payload);});
 
-// 오버레이 상호작용 토글 (패널 드래그/조작할 때만 클릭 통과 해제)
-function setInteractive(v){
-  interactive=v;
-  if(!overlayWin)return;
-  overlayWin.setIgnoreMouseEvents(!v,{forward:true});
-  overlayWin.setFocusable(v);
-  overlayWin.webContents.send("interactive",v);
-}
-ipcMain.on("set-interactive",(e,v)=>setInteractive(v));
+// 클릭 통과 제어: 렌더러가 커서가 HUD 위일 때만 캡처 요청 → 게임 영역 클릭은 항상 통과.
+// (기존 '조작모드'는 전체 화면 클릭을 캡처해 게임을 막던 문제 → hover 기반으로 교체)
+ipcMain.on("hud-interactive",(e,v)=>{
+  if(overlayWin)overlayWin.setIgnoreMouseEvents(!v,{forward:true});
+});
 
 app.whenReady().then(()=>{
   createOverlay();
@@ -61,8 +56,7 @@ app.whenReady().then(()=>{
     if(!overlayWin)return;
     overlayWin.isVisible()?overlayWin.hide():overlayWin.show();
   });
-  globalShortcut.register("Alt+I",()=>setInteractive(!interactive)); // 조작 모드 토글
-  globalShortcut.register("Alt+R",()=>{if(overlayWin)overlayWin.webContents.send("force-recognize");}); // 강제 재인식
+  globalShortcut.register("Alt+R",()=>{if(overlayWin)overlayWin.webContents.send("force-recognize");}); // 상대 재인식(새 매치)
 });
 app.on("will-quit",()=>globalShortcut.unregisterAll());
 app.on("window-all-closed",()=>app.quit());

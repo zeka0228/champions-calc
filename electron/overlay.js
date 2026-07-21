@@ -42,7 +42,7 @@ A.init(DB,id=>liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||n
 
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
-const state={oppTeam:[],oppCur:null,myMon:null,lastHash:null,lastScreen:"other",busy:false};
+const state={oppTeam:[],oppCur:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
 let assetList=null;
 function ensureAssets(){
   if(assetList)return;
@@ -73,8 +73,11 @@ ipcRenderer.on("my-mon",(e,{id})=>{
   state.myMon=id;fetchLive(id).then(()=>{if(state.lastScreen==="battle")renderBattle();});
   toast("내 포켓몬: "+DB.creatures[id].ko);
 });
-ipcRenderer.on("force-recognize",()=>{state.lastHash=null;tick(true);});
-ipcRenderer.on("interactive",(e,v)=>{document.body.style.pointerEvents=v?"auto":"none";});
+// 새 매치/강제 재인식: 선출 잠금 해제 후 다시 인식
+ipcRenderer.on("force-recognize",()=>{
+  state.oppLocked=false;state.oppCur=null;state.lastHash=null;tick(true);
+  toast("재인식 — 선출 잠금 해제");
+});
 
 // ===== 메인 루프 (~1.2초, 변화 없으면 스킵) =====
 function grabFrame(){
@@ -104,6 +107,7 @@ setInterval(()=>tick(false),1200);
 // 프레임 독립: analyze()가 게임영역 기준으로 검출한 카드 지오메트리(절대 좌표)를
 // matcher.extractSprite 로 소비 (matcher.js 원본 무수정).
 async function onSelect(f,a){
+  if(state.oppLocked)return; // 한 번 인식하면 고정 — 배틀 중 교체 엔트리 등 선출-유사 화면 재인식 방지. 새 매치(Alt+R/버튼)에서만 해제
   state.busy=true;
   try{
     ensureAssets();
@@ -124,9 +128,10 @@ async function onSelect(f,a){
       const good=ids.filter(Boolean);
       if(good.length>=3){
         state.oppTeam=good;
+        state.oppLocked=true; // 고정: 이후 재인식 안 함 (새 매치에서 Alt+R/버튼으로 해제)
         for(const id of good)fetchLive(baseOf(id));
         renderSelect();
-        toast("선출 인식: "+good.map(id=>DB.creatures[id].ko).join(", "));
+        toast("선출 인식(고정): "+good.map(id=>DB.creatures[id].ko).join(", "));
       }
     }
   }catch(err){toast("선출 인식 오류: "+err.message);}
@@ -252,13 +257,20 @@ function renderBattle(){
   el.innerHTML=html;
 }
 
-// ===== HUD 드래그 (조작 모드에서만) =====
+// ===== 클릭 통과 제어 + HUD 드래그 =====
+// 기본은 전체 클릭 통과(main이 setIgnoreMouseEvents(true,forward)). 커서가 HUD 위일 때만 캡처 요청 →
+// 게임 영역 클릭은 항상 게임으로 통과. (기존 '조작모드'가 전체 화면 클릭을 막던 버그 해결)
 (function(){
-  const hud=$("hud"),bar=$("dragbar");let sx,sy,ox,oy,drag=false;
+  const hud=$("hud"),bar=$("dragbar");
+  let sx,sy,ox,oy,drag=false,captured=false;
+  function setCapture(on){if(on===captured)return;captured=on;hud.classList.toggle("hot",on);ipcRenderer.send("hud-interactive",on);}
   bar.addEventListener("mousedown",e=>{drag=true;sx=e.screenX;sy=e.screenY;
-    const r=hud.getBoundingClientRect();ox=r.left;oy=r.top;});
-  window.addEventListener("mousemove",e=>{if(!drag)return;
-    hud.style.left=(ox+e.screenX-sx)+"px";hud.style.top=(oy+e.screenY-sy)+"px";});
-  window.addEventListener("mouseup",()=>drag=false);
+    const r=hud.getBoundingClientRect();ox=r.left;oy=r.top;e.preventDefault();});
+  window.addEventListener("mousemove",e=>{
+    if(drag){hud.style.left=(ox+e.screenX-sx)+"px";hud.style.top=(oy+e.screenY-sy)+"px";return;}
+    if(!hud.classList.contains("on")){setCapture(false);return;}
+    const r=hud.getBoundingClientRect();
+    setCapture(e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom);
+  });
+  window.addEventListener("mouseup",()=>{drag=false;});
 })();
-document.body.style.pointerEvents="none"; // 기본: 클릭 통과
