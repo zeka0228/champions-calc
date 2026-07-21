@@ -123,13 +123,13 @@ function decideCell(ranked){
 // 카드 헤더의 타입 아이콘(둥근 사각, 고유 배경색)을 타입별 RGB에 투표해 1~2타입 추론.
 // 성별(원형)·UI 퍼플·크림·기술 아이콘은 색/영역으로 배제. 추론한 타입으로 매칭 후보를 선필터 →
 // 색이 전혀 다른 오인식(마스카나→란쿨루스, 아머까오→파라블레이즈) 차단.
-// 팔레트 = 포켓몬 위키 표준 타입색(유저 제공). Dragon 제외: ♂ 성별 아이콘 파랑(≈55,95,228)이
-// Dragon(80,96,225)과 거의 동색이라 오검출 유발 → 타이트 컷오프(bd<1500)면 성별 색이 어떤 실제
-// 타입과도 안 맞아 자동 배제됨(드래곤 종은 2번째 타입으로 커버). ✅ 실프레임(2559/1600/1280) 검출 정확.
+// 팔레트 = 포켓몬 위키 표준 타입색(유저 제공). Dragon(#5060E0) 포함 — ♂ 성별 파랑(#003CE7)과
+// 색이 비슷하나 B-R로 구분됨(성별 B-R≈160~180 vs 드래곤 144) → 아래 vote 루프에서 성별만 배제.
+// 여성(#E70000)은 타이트 컷오프(bd<1500)로 자동 배제. ✅ 실프레임(2559/1600/1280) 검출 정확.
 const TYPE_COLORS={Normal:[159,161,159],Fire:[230,40,41],Water:[41,128,239],Grass:[63,161,41],Electric:[250,192,0],
   Ice:[61,171,221],Fighting:[255,128,0],Poison:[145,65,203],Ground:[145,81,33],Flying:[129,151,229],
-  Psychic:[239,65,121],Bug:[145,161,25],Rock:[160,162,160],Ghost:[112,65,112],Steel:[96,161,184],
-  Dark:[98,77,78],Fairy:[241,112,236]};
+  Psychic:[239,65,121],Bug:[145,161,25],Rock:[160,162,160],Ghost:[112,65,112],Dragon:[80,96,224],
+  Steel:[96,161,184],Dark:[98,77,78],Fairy:[241,112,236]};
 function nearestType(r,g,b){let best=null,bd=1e9;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];
   const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1500?best:null;} // 타이트: 성별 자동배제
 function detectTypes(img,card){
@@ -145,6 +145,7 @@ function detectTypes(img,card){
   for(let x=sx0;x<sx1;x++)for(let y=sy0;y<sy1;y++){
     const[r,g,b]=px(img,x,y);
     if(dl(r,g,b,lav)<70||dl(r,g,b,[96,64,160])<52||dl(r,g,b,[96,96,160])<42)continue; // UI 퍼플 배제
+    if(b>195&&b-r>150&&g<118)continue;                    // ♂ 성별 파랑 배제(B-R≈160+, 드래곤 B-R=144와 구분)
     if(r>205&&g>190&&b>120)continue;                     // 크림/탄 배제
     if(r>205&&g>205&&b>205)continue;                     // 흰 글리프 배제
     if(r+g+b<70)continue;                                 // 검은 테두리 배제
