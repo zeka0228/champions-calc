@@ -123,15 +123,16 @@ function decideCell(ranked){
 // 카드 헤더의 타입 아이콘(둥근 사각, 고유 배경색)을 타입별 RGB에 투표해 1~2타입 추론.
 // 성별(원형)·UI 퍼플·크림·기술 아이콘은 색/영역으로 배제. 추론한 타입으로 매칭 후보를 선필터 →
 // 색이 전혀 다른 오인식(마스카나→란쿨루스, 아머까오→파라블레이즈) 차단.
-// 팔레트 = 포켓몬 위키 표준 타입색(유저 제공). Dragon(#5060E0) 포함 — ♂ 성별 파랑(#003CE7)과
-// 색이 비슷하나 B-R로 구분됨(성별 B-R≈160~180 vs 드래곤 144) → 아래 vote 루프에서 성별만 배제.
-// 여성(#E70000)은 타이트 컷오프(bd<1500)로 자동 배제. ✅ 실프레임(2559/1600/1280) 검출 정확.
-const TYPE_COLORS={Normal:[159,161,159],Fire:[230,40,41],Water:[41,128,239],Grass:[63,161,41],Electric:[250,192,0],
-  Ice:[61,171,221],Fighting:[255,128,0],Poison:[145,65,203],Ground:[145,81,33],Flying:[129,151,229],
-  Psychic:[239,65,121],Bug:[145,161,25],Rock:[160,162,160],Ghost:[112,65,112],Dragon:[80,96,224],
-  Steel:[96,161,184],Dark:[98,77,78],Fairy:[241,112,236]};
+// 팔레트 = 실게임 타입색(유저가 게임에서 직접 읽은 값). Dragon(#5060E0) 포함 — ♂ 성별 파랑(#003CE7)과
+// B-R로 구분(성별 B-R≈160~180 vs 드래곤 144) → vote 루프에서 성별만 배제. 여성(#E70000)은 타이트 컷오프로 배제.
+// 악(#504040)은 매우 어둡고 저채도라 저채도 배제하면 죽음 → 저채도 배제 안 함(실게임색 정확매칭에 의존).
+// 참고: 악과 노말이 동색(#504040) → Dark만 채택(경쟁전에서 노말 단일은 드묾, 노말 종은 Dark로 나올 수 있음).
+const TYPE_COLORS={Fire:[232,40,40],Water:[40,128,240],Grass:[64,160,40],Electric:[250,192,0],Ice:[64,216,255],
+  Fighting:[255,128,0],Poison:[144,64,204],Ground:[144,80,32],Flying:[128,184,240],Psychic:[240,64,120],
+  Bug:[146,162,29],Rock:[176,168,128],Ghost:[112,64,112],Dragon:[80,96,224],Steel:[96,160,184],
+  Dark:[80,64,64],Fairy:[240,112,240]};
 function nearestType(r,g,b){let best=null,bd=1e9;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];
-  const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1500?best:null;} // 타이트: 성별 자동배제
+  const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1300?best:null;} // 타이트: 성별/노이즈 배제
 function detectTypes(img,card){
   const{x0,y0,x1,y1}=card,cW=x1-x0,cH=y1-y0;
   // 카드 라벤더 = 본문 샘플 → UI 퍼플(라벤더·다크헤더) 배제 기준
@@ -144,13 +145,12 @@ function detectTypes(img,card){
   const votes={};
   for(let x=sx0;x<sx1;x++)for(let y=sy0;y<sy1;y++){
     const[r,g,b]=px(img,x,y);
-    if(dl(r,g,b,lav)<70||dl(r,g,b,[96,64,160])<52||dl(r,g,b,[96,96,160])<42)continue; // UI 퍼플 배제
+    if(dl(r,g,b,lav)<66||dl(r,g,b,[96,64,160])<48||dl(r,g,b,[96,96,160])<40)continue; // UI 퍼플 배제
     if(b>195&&b-r>150&&g<118)continue;                    // ♂ 성별 파랑 배제(B-R≈160+, 드래곤 B-R=144와 구분)
-    if(r>205&&g>190&&b>120)continue;                     // 크림/탄 배제
-    if(r>205&&g>205&&b>205)continue;                     // 흰 글리프 배제
-    if(r+g+b<70)continue;                                 // 검은 테두리 배제
-    if(Math.max(r,g,b)-Math.min(r,g,b)<42)continue;       // 저채도(회/보라 UI) 배제
-    const t=nearestType(r,g,b);if(t)votes[t]=(votes[t]||0)+1;
+    if(r>200&&g>185&&b>130)continue;                     // 크림/탄 배제
+    if(r>200&&g>200&&b>200)continue;                     // 흰 글리프 배제
+    if(r+g+b<55)continue;                                 // 검은 테두리 배제 (악 #504040=208은 통과)
+    const t=nearestType(r,g,b);if(t)votes[t]=(votes[t]||0)+1; // 저채도 배제 없음(악 검출 위해)
   }
   const arr=Object.entries(votes).sort((a,b)=>b[1]-a[1]);const m=arr.length?arr[0][1]:0;
   // 1타입은 넉넉히, 2번째 타입은 1위 대비 0.42배 이상일 때만(약한 스퍼리어스 2타입 컷 — 진짜 2타입은 0.7배+)
