@@ -76,7 +76,8 @@ function detectCells(img,rect){
     const rowTop=Math.round(top+r*rh);
     cells.push({box:{
       x0:col[0]+Math.round(cW*0.005),y0:rowTop+Math.round(rh*0.00),
-      x1:col[0]+Math.round(cW*0.11), y1:rowTop+Math.round(rh*0.42)},col:ci,row:r});
+      x1:col[0]+Math.round(cW*0.11), y1:rowTop+Math.round(rh*0.42)},
+      card:{x0:col[0],y0:rowTop,x1:col[1],y1:rowTop+Math.round(rh)},col:ci,row:r});
   }
   return cells;
 }
@@ -118,6 +119,41 @@ function decideCell(ranked){
   return ranked[0].id;
 }
 
+// ── 타입 아이콘 → 타입 추론 (유저 아이디어: 타입 먼저 좁히고 아이콘 매칭) ──────────
+// 카드 헤더의 타입 아이콘(둥근 사각, 고유 배경색)을 타입별 RGB에 투표해 1~2타입 추론.
+// 성별(원형)·UI 퍼플·크림·기술 아이콘은 색/영역으로 배제. 추론한 타입으로 매칭 후보를 선필터 →
+// 색이 전혀 다른 오인식(마스카나→란쿨루스, 아머까오→파라블레이즈) 차단.
+// 선명 타입은 실측(2559 프레임), Dragon/Ground/Rock/Normal 등은 표준 잠정값 — 실프레임으로 캘리브 예정.
+const TYPE_COLORS={Normal:[172,168,132],Fire:[235,80,55],Water:[41,128,239],Electric:[247,190,25],Grass:[66,161,45],
+  Ice:[110,200,235],Fighting:[230,110,45],Poison:[150,55,200],Ground:[205,170,95],Flying:[130,185,240],
+  Psychic:[239,90,135],Bug:[150,170,45],Rock:[188,172,118],Ghost:[96,64,96],Dragon:[108,100,208],
+  Dark:[95,80,80],Steel:[150,180,200],Fairy:[236,116,238]};
+function nearestType(r,g,b){let best=null,bd=1e9;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];
+  const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1500?best:null;}
+function detectTypes(img,card){
+  const{x0,y0,x1,y1}=card,cW=x1-x0,cH=y1-y0;
+  // 카드 라벤더 = 본문 샘플 → UI 퍼플(라벤더·다크헤더) 배제 기준
+  let LR=0,LG=0,LB=0,ln=0;
+  for(let x=x0+Math.round(cW*0.15);x<x0+cW*0.28;x++)for(let y=y0+Math.round(cH*0.55);y<y0+cH*0.75;y++){
+    const p=px(img,x,y);LR+=p[0];LG+=p[1];LB+=p[2];ln++;}
+  const lav=ln?[LR/ln,LG/ln,LB/ln]:[148,134,200];
+  const UI=[lav,[96,64,160],[96,96,160]];
+  const near=(p,u)=>Math.abs(p[0]-u[0])+Math.abs(p[1]-u[1])+Math.abs(p[2]-u[2])<62;
+  const sx0=x0+Math.round(cW*0.34),sx1=x0+Math.round(cW*0.585),sy0=y0+Math.round(cH*0.02),sy1=y0+Math.round(cH*0.20);
+  const votes={};
+  for(let x=sx0;x<sx1;x++)for(let y=sy0;y<sy1;y++){
+    const[r,g,b]=px(img,x,y);const p=[r,g,b];
+    if(UI.some(u=>near(p,u)))continue;                 // UI 퍼플 배제
+    if(r>205&&g>190&&b>120)continue;                    // 크림/탄 배제
+    if(r>205&&g>205&&b>205)continue;                    // 흰 글리프 배제
+    if(r+g+b<70)continue;                                // 검은 테두리 배제
+    if(Math.max(r,g,b)-Math.min(r,g,b)<45)continue;      // 저채도(회/보라 UI) 배제
+    const t=nearestType(r,g,b);if(t)votes[t]=(votes[t]||0)+1;
+  }
+  const arr=Object.entries(votes).sort((a,b)=>b[1]-a[1]);const m=arr.length?arr[0][1]:0;
+  return arr.filter(([t,v])=>v>=Math.max(20,m*0.3)).slice(0,3).map(x=>x[0]); // 주요 타입만
+}
+
 // 게임영역이 낮은 해상도로 캡처되면(예: 에뮬 창이 화면에 작게 표시) 아이콘이 작아져 추출 파라미터가
 // 안 맞고 매칭이 무너진다(실측: 1600폭 0/6, 1280폭 2/6). 아이콘을 튜닝 스케일(~네이티브)로 되돌리도록
 // 게임영역만 최근접 업스케일 → 복구(실측: 1600 5/6, 1280 6/6). 네이티브 고해상도면 그대로 통과.
@@ -133,26 +169,33 @@ function upscaleRegion(img,rect){
 }
 
 // 고수준: 이미지+rect → 내 팀 6마리 종족 id 배열(읽기순서). matcher=SpriteMatcher, assets=[{id,img}].
-// 6셀 모두 식별되면 {mons:[6], cells, upscaled} 반환, 아니면 {mons, ok:false}.
-function recognize(img,rect,matcher,assets){
+// creatures(=DB.creatures) 주어지면 "타입 먼저 추론 → 그 타입 후보로 선필터 → 아이콘 매칭"(오인식 차단).
+// 6셀 모두 식별되면 {mons:[6], cells, upscaled, types} 반환, 아니면 {mons, ok:false}.
+function recognize(img,rect,matcher,assets,creatures){
   let upscaled=false;
   if(rect.w<MIN_W){const u=upscaleRegion(img,rect);img=u.img;rect=u.rect;upscaled=true;} // 저해상도 복구
   const cells=detectCells(img,rect);
   if(!cells)return {mons:[null,null,null,null,null,null],ok:false,upscaled};
-  const mons=[],scores=[];
+  const typeOf=id=>{const c=creatures&&creatures[id];return c&&c.types?c.types:[];};
+  const mons=[],scores=[],typesArr=[];
   for(const cell of cells){
     const ex=extractIcon(img,cell.box);
-    if(!ex){mons.push(null);scores.push(null);continue;}
-    const ranked=matcher.matchAll(ex.region,ex.edge,assets);
+    if(!ex){mons.push(null);scores.push(null);typesArr.push([]);continue;}
+    const types=creatures?detectTypes(img,cell.card):[];
+    typesArr.push(types);
+    // 타입 선필터: 추론 타입 중 하나라도 가진 종족만 후보. 후보가 너무 적으면(오추론 보호) 전체 폴백.
+    let cand=assets;
+    if(types.length){const set=new Set(types);const f=assets.filter(a=>typeOf(a.id).some(t=>set.has(t)));if(f.length>=3)cand=f;}
+    const ranked=matcher.matchAll(ex.region,ex.edge,cand);
     mons.push(decideCell(ranked));
     scores.push(ranked[0]?Math.round(ranked[0].score):null);
   }
   const ok=mons.filter(Boolean).length>=6;
-  return {mons,scores,cells,ok,upscaled};
+  return {mons,scores,cells,ok,upscaled,types:typesArr};
 }
 
 // 팀 서명(순서 무관 종족 집합) — dedup 키
 function signature(mons){return mons.filter(Boolean).slice().sort().join(",");}
 
-return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,recognize,signature};
+return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,detectTypes,recognize,signature};
 });

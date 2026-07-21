@@ -284,7 +284,7 @@ async function onTeamRegister(f,a){
     ensureAssets();
     $("mode").textContent="팀등록";$("conf").textContent="";
     const img={data:f.img.data,width:f.img.width,height:f.img.height};
-    const r=TR.recognize(img,a.rect,SM,assetList);
+    const r=TR.recognize(img,a.rect,SM,assetList,DB.creatures); // 타입 먼저 추론 → 후보 필터 → 아이콘 매칭
     if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
       if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
         ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
@@ -292,7 +292,7 @@ async function onTeamRegister(f,a){
       state.busy=false;return;
     }
     const sig=TR.signature(r.mons);
-    teamStore.lastSig=sig;teamStore.lastMons=r.mons;
+    teamStore.lastSig=sig;teamStore.lastMons=r.mons;teamStore.lastTypes=r.types;
     handleRecognizedTeam(sig,r.mons);
   }catch(err){toast("팀 인식 오류: "+err.message);}
   state.busy=false;
@@ -329,9 +329,13 @@ window.__team=(action,idx)=>{
   else if(action==="rej"){teamStore.rejectedSig=sig;teamStore.ui=null;renderTeamPanel(mons,sig);}
   else if(action==="del")deleteTeam(idx);
 };
-function monChips(mons){return mons.map(id=>{const c=DB.creatures[id];return c?
-  `<span class="tchip"><img src="../assets/sprites/${c.sprite}.webp" onerror="this.style.visibility='hidden'"><span>${c.ko}</span></span>`:
-  `<span class="tchip"><span>?</span></span>`;}).join("");}
+const TYPE_KO={Normal:"노말",Fire:"불꽃",Water:"물",Electric:"전기",Grass:"풀",Ice:"얼음",Fighting:"격투",Poison:"독",Ground:"땅",Flying:"비행",Psychic:"에스퍼",Bug:"벌레",Rock:"바위",Ghost:"고스트",Dragon:"드래곤",Dark:"악",Steel:"강철",Fairy:"페어리"};
+function monChips(mons){return mons.map((id,i)=>{const c=DB.creatures[id];
+  const ty=(teamStore.lastTypes&&teamStore.lastTypes[i])||[];
+  const t=ty.length?`<span class="ttype">${ty.map(x=>TYPE_KO[x]||x).join("·")}</span>`:"";
+  return c?
+  `<span class="tchip"><img src="../assets/sprites/${c.sprite}.webp" onerror="this.style.visibility='hidden'"><span>${c.ko}</span>${t}</span>`:
+  `<span class="tchip"><span>?</span>${t}</span>`;}).join("");}
 function renderTeamPanel(mons,sig){
   const el=$("content");
   let h=`<h3>내 팀 (${teamStore.teams.length}/${MAX_TEAMS})</h3><div class="tteam">${monChips(mons||[])}</div>`;
