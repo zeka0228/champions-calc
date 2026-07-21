@@ -123,13 +123,15 @@ function decideCell(ranked){
 // 카드 헤더의 타입 아이콘(둥근 사각, 고유 배경색)을 타입별 RGB에 투표해 1~2타입 추론.
 // 성별(원형)·UI 퍼플·크림·기술 아이콘은 색/영역으로 배제. 추론한 타입으로 매칭 후보를 선필터 →
 // 색이 전혀 다른 오인식(마스카나→란쿨루스, 아머까오→파라블레이즈) 차단.
-// 선명 타입은 실측(2559 프레임), Dragon/Ground/Rock/Normal 등은 표준 잠정값 — 실프레임으로 캘리브 예정.
-const TYPE_COLORS={Normal:[172,168,132],Fire:[235,80,55],Water:[41,128,239],Electric:[247,190,25],Grass:[66,161,45],
-  Ice:[110,200,235],Fighting:[230,110,45],Poison:[150,55,200],Ground:[205,170,95],Flying:[130,185,240],
-  Psychic:[239,90,135],Bug:[150,170,45],Rock:[188,172,118],Ghost:[96,64,96],Dragon:[108,100,208],
-  Dark:[95,80,80],Steel:[150,180,200],Fairy:[236,116,238]};
+// 팔레트 = 포켓몬 위키 표준 타입색(유저 제공). Dragon 제외: ♂ 성별 아이콘 파랑(≈55,95,228)이
+// Dragon(80,96,225)과 거의 동색이라 오검출 유발 → 타이트 컷오프(bd<1500)면 성별 색이 어떤 실제
+// 타입과도 안 맞아 자동 배제됨(드래곤 종은 2번째 타입으로 커버). ✅ 실프레임(2559/1600/1280) 검출 정확.
+const TYPE_COLORS={Normal:[159,161,159],Fire:[230,40,41],Water:[41,128,239],Grass:[63,161,41],Electric:[250,192,0],
+  Ice:[61,171,221],Fighting:[255,128,0],Poison:[145,65,203],Ground:[145,81,33],Flying:[129,151,229],
+  Psychic:[239,65,121],Bug:[145,161,25],Rock:[160,162,160],Ghost:[112,65,112],Steel:[96,161,184],
+  Dark:[98,77,78],Fairy:[241,112,236]};
 function nearestType(r,g,b){let best=null,bd=1e9;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];
-  const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1500?best:null;}
+  const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;best=t;}}return bd<1500?best:null;} // 타이트: 성별 자동배제
 function detectTypes(img,card){
   const{x0,y0,x1,y1}=card,cW=x1-x0,cH=y1-y0;
   // 카드 라벤더 = 본문 샘플 → UI 퍼플(라벤더·다크헤더) 배제 기준
@@ -137,21 +139,31 @@ function detectTypes(img,card){
   for(let x=x0+Math.round(cW*0.15);x<x0+cW*0.28;x++)for(let y=y0+Math.round(cH*0.55);y<y0+cH*0.75;y++){
     const p=px(img,x,y);LR+=p[0];LG+=p[1];LB+=p[2];ln++;}
   const lav=ln?[LR/ln,LG/ln,LB/ln]:[148,134,200];
-  const UI=[lav,[96,64,160],[96,96,160]];
-  const near=(p,u)=>Math.abs(p[0]-u[0])+Math.abs(p[1]-u[1])+Math.abs(p[2]-u[2])<62;
+  const dl=(r,g,b,u)=>Math.abs(r-u[0])+Math.abs(g-u[1])+Math.abs(b-u[2]);
   const sx0=x0+Math.round(cW*0.34),sx1=x0+Math.round(cW*0.585),sy0=y0+Math.round(cH*0.02),sy1=y0+Math.round(cH*0.20);
   const votes={};
   for(let x=sx0;x<sx1;x++)for(let y=sy0;y<sy1;y++){
-    const[r,g,b]=px(img,x,y);const p=[r,g,b];
-    if(UI.some(u=>near(p,u)))continue;                 // UI 퍼플 배제
-    if(r>205&&g>190&&b>120)continue;                    // 크림/탄 배제
-    if(r>205&&g>205&&b>205)continue;                    // 흰 글리프 배제
-    if(r+g+b<70)continue;                                // 검은 테두리 배제
-    if(Math.max(r,g,b)-Math.min(r,g,b)<45)continue;      // 저채도(회/보라 UI) 배제
+    const[r,g,b]=px(img,x,y);
+    if(dl(r,g,b,lav)<70||dl(r,g,b,[96,64,160])<52||dl(r,g,b,[96,96,160])<42)continue; // UI 퍼플 배제
+    if(r>205&&g>190&&b>120)continue;                     // 크림/탄 배제
+    if(r>205&&g>205&&b>205)continue;                     // 흰 글리프 배제
+    if(r+g+b<70)continue;                                 // 검은 테두리 배제
+    if(Math.max(r,g,b)-Math.min(r,g,b)<42)continue;       // 저채도(회/보라 UI) 배제
     const t=nearestType(r,g,b);if(t)votes[t]=(votes[t]||0)+1;
   }
   const arr=Object.entries(votes).sort((a,b)=>b[1]-a[1]);const m=arr.length?arr[0][1]:0;
-  return arr.filter(([t,v])=>v>=Math.max(20,m*0.3)).slice(0,3).map(x=>x[0]); // 주요 타입만
+  // 1타입은 넉넉히, 2번째 타입은 1위 대비 0.42배 이상일 때만(약한 스퍼리어스 2타입 컷 — 진짜 2타입은 0.7배+)
+  return arr.filter(([t,v],i)=>i===0?v>=25:v>=Math.max(30,m*0.42)).slice(0,2).map(x=>x[0]);
+}
+// 유저 규칙: 1타입이면 그 타입, 2타입이면 둘 다 가진 종족(AND). 비면 OR→전체로 폴백.
+function candByTypes(types,typeOf,assets){
+  if(!types.length)return assets;
+  let f;
+  if(types.length>=2){
+    f=assets.filter(a=>{const ts=typeOf(a.id);return types.every(t=>ts.includes(t));}); // AND
+    if(f.length<2)f=assets.filter(a=>{const ts=typeOf(a.id);return types.some(t=>ts.includes(t));}); // OR 폴백
+  }else f=assets.filter(a=>typeOf(a.id).includes(types[0]));
+  return f.length>=1?f:assets;
 }
 
 // 게임영역이 낮은 해상도로 캡처되면(예: 에뮬 창이 화면에 작게 표시) 아이콘이 작아져 추출 파라미터가
@@ -183,9 +195,8 @@ function recognize(img,rect,matcher,assets,creatures){
     if(!ex){mons.push(null);scores.push(null);typesArr.push([]);continue;}
     const types=creatures?detectTypes(img,cell.card):[];
     typesArr.push(types);
-    // 타입 선필터: 추론 타입 중 하나라도 가진 종족만 후보. 후보가 너무 적으면(오추론 보호) 전체 폴백.
-    let cand=assets;
-    if(types.length){const set=new Set(types);const f=assets.filter(a=>typeOf(a.id).some(t=>set.has(t)));if(f.length>=3)cand=f;}
+    // 타입 먼저 → 후보 선필터(1타입=그 타입, 2타입=둘 다) → 그 안에서만 아이콘 매칭
+    const cand=creatures?candByTypes(types,typeOf,assets):assets;
     const ranked=matcher.matchAll(ex.region,ex.edge,cand);
     mons.push(decideCell(ranked));
     scores.push(ranked[0]?Math.round(ranked[0].score):null);
