@@ -161,8 +161,8 @@ function candByTypes(types,typeOf,assets){
   if(!types.length)return assets;
   let f;
   if(types.length>=2){
-    f=assets.filter(a=>{const ts=typeOf(a.id);return types.every(t=>ts.includes(t));}); // AND
-    if(f.length<2)f=assets.filter(a=>{const ts=typeOf(a.id);return types.some(t=>ts.includes(t));}); // OR 폴백
+    f=assets.filter(a=>{const ts=typeOf(a.id);return types.every(t=>ts.includes(t));}); // AND(둘 다)
+    if(!f.length)f=assets.filter(a=>{const ts=typeOf(a.id);return types.some(t=>ts.includes(t));}); // AND가 0마리일 때만 OR
   }else f=assets.filter(a=>typeOf(a.id).includes(types[0]));
   return f.length>=1?f:assets;
 }
