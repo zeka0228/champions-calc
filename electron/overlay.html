@@ -27,6 +27,22 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
 .ko1{color:#ff5d5d;font-weight:700}.ko2{color:#facc15}.ko3{color:#93a1b0}
 .dmgRow{display:grid;grid-template-columns:1fr auto;gap:4px;border-top:1px solid #232c37;padding:3px 0;font-size:12px}
 .small{font-size:11px;color:#93a1b0}
+/* 팀 등록 패널 */
+.tteam{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+.tchip{display:flex;align-items:center;gap:3px;background:#1a2028;border-radius:6px;padding:2px 6px 2px 2px;font-size:11px}
+.tchip img{width:24px;height:24px}
+.tprompt{margin:6px 0 4px;font-size:12px;color:#e8edf2}
+.tprompt.ok{color:#4ade80}
+.twarn{margin:6px 0;font-size:12px;color:#facc15;background:#3a3312;border-radius:6px;padding:6px 8px;line-height:1.5}
+.tbtns{display:flex;gap:6px;margin:4px 0}
+.tbtn{background:#222a35;border:1px solid #2e3947;color:#e8edf2;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+.tbtn:hover{border-color:#4da3ff}
+.tbtn.ok{background:#123b26;border-color:#2f7d4f;color:#7cf0a8}
+.tbtn.ok:hover{border-color:#4ade80}
+.tbtn.del{padding:3px 9px;font-size:11px}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #232c37;padding:4px 0}
+.trow.act .tnm{color:#4ade80;font-weight:700}
+.tnm{font-size:12px}
 #toast{position:fixed;bottom:24px;left:16px;background:rgba(13,17,22,.86);border:1px solid #2e3947;
   border-radius:8px;padding:6px 12px;font-size:12px;color:#93a1b0;display:none}
 </style>

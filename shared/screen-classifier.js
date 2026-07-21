@@ -84,6 +84,11 @@ function classify(img,rect){
     const centerYellow=ratio(img,rect,0.44,0.56,0.30,0.50,isYellow);
     if(centerYellow>0.03)return {screen:"matchmaking",centerPurple,centerYellow,conf:Math.min(1,centerPurple)};
   }
+  // 0.5) 팀등록(팀 상세 화면): 상단 라임 탭(능력/스테이터스)은 다른 화면에 없는 고유 앵커.
+  //   실측: 팀등록 라임 0.08 vs 선출/배틀/매칭 0.00 → 오검출 0. 카드 상세 검출·6마리 식별은 team-register.js.
+  //   배틀이 아닌 화면에서만 팀 인식(요구사항) → classify가 배틀과 자연히 분리(배틀은 자홍 이름바, 여긴 없음).
+  const teamTab=ratio(img,rect,0.30,0.70,0.135,0.205,isLime);
+  if(teamTab>0.03)return {screen:"teamregister",teamTab,conf:1};
   // 1) 선출: 우측 자홍 카드 밴드 4개 이상 + 좌측 보라 파티 카드 존재
   const bands=rightBandCount(img,rect);
   if(bands>=4){
@@ -200,6 +205,15 @@ function detectRegions(img,screen,rect){
       const bw=my.x1-my.x0,bh=my.y1-my.y0;
       out.myName={x0:my.x0+Math.floor(bw*0.02),y0:my.y0+Math.floor(bh*0.10),
                   x1:my.x1-Math.floor(bw*0.30),y1:my.y1-Math.floor(bh*0.10),src:"anchor"};
+      // 내 이름바 2D 도감 아이콘 → 등록된 내 팀 6마리와 매칭해 활성 내 포켓몬 자동 인식.
+      // 내 이름바는 상대(top-right)와 레이아웃이 달라 오프셋 별도: 실측(2559x1439) 결과 아이콘은
+      // 바 좌하단, 바 좌단 기준 x[+0.3bh,+1.5bh]·y[+0.15bh,바하단]. (barH 상수시간 매칭 정규화용)
+      out.myIcon={
+        x0:Math.max(rect.x0,Math.round(my.x0+bh*0.30)),
+        y0:Math.max(rect.y0,Math.round(my.y0+bh*0.15)),
+        x1:Math.min(rect.x0+rect.w,Math.round(my.x0+bh*1.55)),
+        y1:Math.min(rect.y0+rect.h,Math.round(my.y1+bh*0.10)),
+        barH:bh,src:"anchor"};
     }
   }
   return out;

@@ -5,6 +5,7 @@ const {ipcRenderer}=require("electron");
 const DB=window.DB;
 const E=require("../engine.js"),A=require("../analyzer.js"),
       SC=require("../shared/screen-classifier.js"),SM=require("../matcher.js");
+const TR=require("../shared/team-register.js"); // 팀등록 화면 → 내 팀 6마리 인식
 E.init(DB);
 
 // ===== 실시간 채용률 (live 우선, 6시간 캐시, 실패 시 내장 폴백) =====
@@ -107,6 +108,7 @@ async function tick(force){
   }
   else if(a.screen==="select")await onSelect(f,a);
   else if(a.screen==="battle")await onBattle(f,a);
+  else if(a.screen==="teamregister")await onTeamRegister(f,a); // 팀 상세 화면 → 내 팀 등록/관리
 }
 setInterval(()=>tick(false),1200);
 
@@ -223,6 +225,7 @@ async function onBattle(f,a){
   if(battleBusy)return;battleBusy=true;state.busy=true;
   try{
     const R=a.regions;
+    if(R.myIcon&&activeTeam())identifyMyMon(f,R); // 등록된 활성 팀 → 내 활성 포켓몬 자동 인식(신뢰 시 수동선택 대체)
     if(R.oppIcon&&state.oppTeam.length){
       const region=cropRegionImg(f,R.oppIcon);
       const barH=R.oppIcon.barH||Math.round((R.oppIcon.y1-R.oppIcon.y0)/3);
@@ -262,6 +265,99 @@ function renderBattle(){
       html+=`<div class="dmgRow"><span>${l.moveKo}</span><span class="${l.koClass}">${l.pctMin}~${l.pctMax}% · ${l.ko}</span></div>`;
   }
   el.innerHTML=html;
+}
+
+// ===== 내 팀 등록 (팀 상세 화면 자동 인식 → 최대 6팀 유지 · localStorage) =====
+// 요구사항: 배틀 아닐 때만 인식(classify가 teamregister로 분리) · 포켓몬 리스트가 등록된 팀과 상이하면 새 팀
+// · 6팀 초과 시 알림 후 삭제 · 삭제하면 바로 재인식해 등록 확인 · 거절하면 다른 팀 인식까지 대기.
+const MAX_TEAMS=6;
+const teamStore={teams:[],activeSig:null,rejectedSig:null,ui:null,lastSig:null,lastMons:null};
+try{const s=JSON.parse(localStorage.getItem("ov_teams"));if(Array.isArray(s))teamStore.teams=s;}catch(e){}
+function saveTeams(){try{localStorage.setItem("ov_teams",JSON.stringify(teamStore.teams));}catch(e){}}
+function teamName(mons){const g=mons.filter(Boolean);return g.map(id=>DB.creatures[id]?DB.creatures[id].ko:id).slice(0,3).join("·")+(g.length>3?" 외":"");}
+function findTeam(sig){return teamStore.teams.find(t=>t.sig===sig)||null;}
+function activeTeam(){return teamStore.teams.find(t=>t.sig===teamStore.activeSig)||null;}
+
+async function onTeamRegister(f,a){
+  if(state.busy)return;state.busy=true;
+  try{
+    ensureAssets();
+    $("mode").textContent="팀등록";$("conf").textContent="";
+    const img={data:f.img.data,width:f.img.width,height:f.img.height};
+    const r=TR.recognize(img,a.rect,SM,assetList);
+    if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
+      if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML='<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>';
+      state.busy=false;return;
+    }
+    const sig=TR.signature(r.mons);
+    teamStore.lastSig=sig;teamStore.lastMons=r.mons;
+    handleRecognizedTeam(sig,r.mons);
+  }catch(err){toast("팀 인식 오류: "+err.message);}
+  state.busy=false;
+}
+function handleRecognizedTeam(sig,mons){
+  const existing=findTeam(sig);
+  if(existing){ // 이미 등록된 팀 → 활성화
+    if(teamStore.activeSig!==sig){teamStore.activeSig=sig;toast("활성 팀: "+existing.name);}
+    teamStore.ui=null;return renderTeamPanel(mons,sig);
+  }
+  if(sig===teamStore.rejectedSig){teamStore.ui=null;return renderTeamPanel(mons,sig);} // 거절한 팀 → 다른 팀까지 대기
+  teamStore.ui=teamStore.teams.length<MAX_TEAMS?{mode:"confirm",sig,mons}:{mode:"full",sig,mons};
+  renderTeamPanel(mons,sig);
+}
+function registerTeam(sig,mons){
+  if(!sig||findTeam(sig))return;
+  teamStore.teams.push({sig,mons,name:teamName(mons)});
+  if(teamStore.teams.length>MAX_TEAMS)teamStore.teams=teamStore.teams.slice(-MAX_TEAMS);
+  teamStore.activeSig=sig;teamStore.rejectedSig=null;teamStore.ui=null;saveTeams();
+  toast("팀 등록: "+teamName(mons));renderTeamPanel(mons,sig);
+}
+function deleteTeam(idx){
+  const t=teamStore.teams[idx];if(!t)return;
+  teamStore.teams.splice(idx,1);if(teamStore.activeSig===t.sig)teamStore.activeSig=null;saveTeams();
+  toast("팀 삭제: "+t.name);
+  const sig=teamStore.lastSig,mons=teamStore.lastMons; // 삭제로 자리 생김 → 방금 인식된 새 팀 바로 등록 확인
+  if(sig&&!findTeam(sig)&&teamStore.teams.length<MAX_TEAMS&&sig!==teamStore.rejectedSig)teamStore.ui={mode:"confirm",sig,mons};
+  renderTeamPanel(mons||[],sig);
+}
+// 인라인 onclick 핸들러(nodeIntegration 렌더러 = window 전역)
+window.__team=(action,idx)=>{
+  const ui=teamStore.ui,sig=ui?ui.sig:teamStore.lastSig,mons=ui?ui.mons:teamStore.lastMons;
+  if(action==="reg")registerTeam(sig,mons);
+  else if(action==="rej"){teamStore.rejectedSig=sig;teamStore.ui=null;renderTeamPanel(mons,sig);}
+  else if(action==="del")deleteTeam(idx);
+};
+function monChips(mons){return mons.map(id=>{const c=DB.creatures[id];return c?
+  `<span class="tchip"><img src="../assets/sprites/${c.sprite}.webp" onerror="this.style.visibility='hidden'"><span>${c.ko}</span></span>`:
+  `<span class="tchip"><span>?</span></span>`;}).join("");}
+function renderTeamPanel(mons,sig){
+  const el=$("content");
+  let h=`<h3>내 팀 (${teamStore.teams.length}/${MAX_TEAMS})</h3><div class="tteam">${monChips(mons||[])}</div>`;
+  const ui=teamStore.ui;
+  if(ui&&ui.sig===sig&&ui.mode==="confirm")
+    h+=`<div class="tprompt">이 팀을 새로 등록할까요?</div><div class="tbtns"><button class="tbtn ok" onclick="__team('reg')">등록</button><button class="tbtn" onclick="__team('rej')">거절</button></div>`;
+  else if(ui&&ui.sig===sig&&ui.mode==="full")
+    h+=`<div class="twarn">⚠ 팀 슬롯이 가득 찼습니다 (6/6). 아래에서 하나를 삭제하면 이 팀을 등록합니다.</div>`;
+  else if(findTeam(sig))
+    h+=`<div class="tprompt ok">✔ 등록된 팀${teamStore.activeSig===sig?" · 활성":""}</div>`;
+  else
+    h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('reg')">이 팀 등록</button></div>`;
+  if(teamStore.teams.length){
+    h+=`<h3 style="margin-top:8px">등록된 팀</h3>`;
+    teamStore.teams.forEach((t,i)=>{h+=`<div class="trow${t.sig===teamStore.activeSig?" act":""}"><span class="tnm">${t.name}</span><button class="tbtn del" onclick="__team('del',${i})">삭제</button></div>`;});
+  }
+  el.innerHTML=h;
+}
+
+// 배틀: 등록된 활성 팀 6마리 중 내 활성 포켓몬을 이름바 아이콘으로 자동 식별(상대 식별과 동일 경로).
+// 신뢰 임계(identifyOppIcon의 ABS_THR/MARGIN) 통과 시에만 수동 선택을 대체 → 불확실하면 수동 유지(오표시 방지).
+// 내 이름바 오프셋은 실측 1프레임 기준 잠정값 → 실배틀 프레임으로 튜닝 필요(상대 아이콘과 동일 절차).
+function identifyMyMon(f,R){
+  const team=activeTeam();if(!team)return;
+  const region=cropRegionImg(f,R.myIcon);
+  const barH=R.myIcon.barH||Math.round((R.myIcon.y1-R.myIcon.y0)/3);
+  const r=identifyOppIcon(region,barH,team.mons);
+  if(r&&r.id!==state.myMon){state.myMon=r.id;fetchLive(baseOf(r.id)).then(()=>{if(state.lastScreen==="battle")renderBattle();});toast("내 포켓몬(자동): "+DB.creatures[r.id].ko);}
 }
 
 // ===== 클릭 통과 제어 + HUD 드래그 =====
