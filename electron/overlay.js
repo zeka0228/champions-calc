@@ -286,7 +286,9 @@ async function onTeamRegister(f,a){
     const img={data:f.img.data,width:f.img.width,height:f.img.height};
     const r=TR.recognize(img,a.rect,SM,assetList);
     if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
-      if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML='<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>';
+      if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
+        ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
+        : '<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>';
       state.busy=false;return;
     }
     const sig=TR.signature(r.mons);

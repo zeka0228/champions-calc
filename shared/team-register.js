@@ -118,11 +118,27 @@ function decideCell(ranked){
   return ranked[0].id;
 }
 
+// 게임영역이 낮은 해상도로 캡처되면(예: 에뮬 창이 화면에 작게 표시) 아이콘이 작아져 추출 파라미터가
+// 안 맞고 매칭이 무너진다(실측: 1600폭 0/6, 1280폭 2/6). 아이콘을 튜닝 스케일(~네이티브)로 되돌리도록
+// 게임영역만 최근접 업스케일 → 복구(실측: 1600 5/6, 1280 6/6). 네이티브 고해상도면 그대로 통과.
+const MIN_W=2000,TARGET_W=2400;
+function upscaleRegion(img,rect){
+  const s=TARGET_W/rect.w,W=Math.round(rect.w*s),H=Math.round(rect.h*s),out=new Uint8Array(W*H*4);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const sx=rect.x0+Math.min(rect.w-1,(x/s)|0),sy=rect.y0+Math.min(rect.h-1,(y/s)|0);
+    const si=(sy*img.width+sx)*4,di=(y*W+x)*4;
+    out[di]=img.data[si];out[di+1]=img.data[si+1];out[di+2]=img.data[si+2];out[di+3]=255;
+  }
+  return {img:{data:out,width:W,height:H},rect:{x0:0,y0:0,w:W,h:H}};
+}
+
 // 고수준: 이미지+rect → 내 팀 6마리 종족 id 배열(읽기순서). matcher=SpriteMatcher, assets=[{id,img}].
-// 6셀 모두 식별되면 {mons:[6], cells} 반환, 아니면 {mons, ok:false}.
+// 6셀 모두 식별되면 {mons:[6], cells, upscaled} 반환, 아니면 {mons, ok:false}.
 function recognize(img,rect,matcher,assets){
+  let upscaled=false;
+  if(rect.w<MIN_W){const u=upscaleRegion(img,rect);img=u.img;rect=u.rect;upscaled=true;} // 저해상도 복구
   const cells=detectCells(img,rect);
-  if(!cells)return null;
+  if(!cells)return {mons:[null,null,null,null,null,null],ok:false,upscaled};
   const mons=[],scores=[];
   for(const cell of cells){
     const ex=extractIcon(img,cell.box);
@@ -132,7 +148,7 @@ function recognize(img,rect,matcher,assets){
     scores.push(ranked[0]?Math.round(ranked[0].score):null);
   }
   const ok=mons.filter(Boolean).length>=6;
-  return {mons,scores,cells,ok};
+  return {mons,scores,cells,ok,upscaled};
 }
 
 // 팀 서명(순서 무관 종족 집합) — dedup 키
