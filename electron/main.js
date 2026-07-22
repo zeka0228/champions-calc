@@ -1,6 +1,9 @@
 // main.js — Electron 메인 프로세스: 창 선택형 캡처 + 투명 오버레이 + 전역 핫키
 const {app,BrowserWindow,ipcMain,desktopCapturer,globalShortcut,screen}=require("electron");
 const path=require("path");
+const fs=require("fs");
+// [진단] overlay가 to-control "diag"로 보내는 로그를 파일로도 남김(바탕화면/포챔스_diag.log) — 원격 진단용.
+let DIAG_LOG=null;
 
 // [로컬 전용] 데이터셋 캡처는 gitignore된 electron/capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
 let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
@@ -45,7 +48,11 @@ ipcMain.handle("list-sources",async()=>{
 
 // 컨트롤 → 오버레이 메시지 중계 (캡처 대상 선택, 내 포켓몬 설정 등)
 ipcMain.on("to-overlay",(e,ch,payload)=>{if(overlayWin)overlayWin.webContents.send(ch,payload);});
-ipcMain.on("to-control",(e,ch,payload)=>{if(controlWin)controlWin.webContents.send(ch,payload);});
+ipcMain.on("to-control",(e,ch,payload)=>{
+  if(controlWin)controlWin.webContents.send(ch,payload);
+  if(ch==="diag"&&DIAG_LOG){try{const l=(payload&&payload.line)!=null?payload.line:String(payload);
+    fs.appendFileSync(DIAG_LOG,`[${new Date().toISOString()}] ${l}\n`);}catch(err){}}
+});
 
 // 클릭 통과 제어: 렌더러가 커서가 HUD 위일 때만 캡처 요청 → 게임 영역 클릭은 항상 통과.
 // (기존 '조작모드'는 전체 화면 클릭을 캡처해 게임을 막던 문제 → hover 기반으로 교체)
@@ -54,6 +61,8 @@ ipcMain.on("hud-interactive",(e,v)=>{
 });
 
 app.whenReady().then(()=>{
+  try{DIAG_LOG=path.join(app.getPath("desktop"),"포챔스_diag.log");   // 세션마다 새로 시작
+    fs.writeFileSync(DIAG_LOG,`=== 세션 시작 ${new Date().toISOString()} ===\n`);}catch(e){DIAG_LOG=null;}
   createOverlay();
   createControl();
   globalShortcut.register("Alt+O",()=>{ // 오버레이 표시/숨김

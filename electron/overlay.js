@@ -115,6 +115,7 @@ async function tick(force){
   state.lastHash=h;
   const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
   const prev=state.lastScreen;state.lastScreen=a.screen;
+  if(prev!==a.screen)dlog(`화면 전환: ${a.screen} (rect ${a.rect.w}x${a.rect.h}${a.lowRes?" 저해상도⚠":""})`,a.screen==="teamregister"?"ok":"");
   if(a.screen!=="teamregister")_teamHtml=null;   // 팀등록 벗어나면 재렌더 dedupe 리셋(다른 화면이 content를 덮으므로)
   $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
   $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
