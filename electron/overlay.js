@@ -8,7 +8,11 @@ const E=require("../engine.js"),A=require("../analyzer.js"),
 const TR=require("../shared/team-register.js"); // 팀등록 화면 → 내 팀 6마리 인식
 const TD=require("../shared/team-detail.js");   // 팀등록 상세 → 세트(수치·성격·아이템·EV) 추출
 const SR=require("../shared/select-recognize.js"); // 선출 화면 → 상대 6마리 견고 인식(팀스캔 방식)
+const SD=require("../shared/set-detail.js");    // 능력탭 텍스트 인식 → 특성·기술(렌더-매칭)
 E.init(DB);
+// 렌더-매칭용 텍스트 렌더러(캔버스, 렌더러 전용) — 최초 1회 생성 후 재사용.
+let _renderText=null;
+function renderText(){return _renderText||(_renderText=SD.makeCanvasRenderer());}
 
 // 세트 유틸 ── 화면 EV 짧은키(h/a/b/c/d/s) → engine.calcStats 긴키(hp/atk/…) 매핑 후 능력치 산출.
 // 검증: calcStats(lv50·IV31)가 팀등록 화면 실수치를 완전 재현(EV=calcStats pts). 메가면 메가폼 종족값으로 계산.
@@ -539,7 +543,14 @@ function readMonDetail(img,card,species,statTab){
   if(statTab){const s=TD.readStatTab(img,card);if(!s.ok)return null;
     return {tab:"stat",nature:TD.resolveNature(s.up,s.dn,DB.natures),evs:s.evs,stats:s.stats};}
   const ms=TD.detectMegaStone(img,card),mega=megaFormeOf(species); // 메가스톤+종족 메가폼 있으면 메가 확정
-  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega};
+  let ability=null,moves=null;                                     // 능력탭 텍스트 인식(렌더-매칭)
+  try{const rt=renderText();
+    const ab=SD.detectAbility(img,card,species,DB,rt);
+    if(ab&&ab.key)ability={key:ab.key,ko:ab.ko};
+    const mv=SD.detectMoves(img,card,species,DB,window.LEARNSETS,rt); // 4개 {key,ko,type}(미감지=key null)
+    if(mv&&mv.length)moves=mv.map(m=>(m&&m.key)?{key:m.key,ko:m.ko,type:m.type}:null);
+  }catch(e){dlog("특성·기술 인식 오류: "+e.message,"err");}
+  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega,ability,moves};
 }
 function mergeTeamDetails(sig,mons,img,rect){
   const team=findTeam(sig);if(!team){dlog("세트병합: 미등록 팀 → 스킵");return;} // 등록된 팀에만 세트 누적
@@ -562,7 +573,18 @@ function mergeTeamDetails(sig,mons,img,rect){
     }else{
       const megChg=(slot.mega||null)!==(d.mega||null)||!!slot.megaStone!==!!d.megaStone;
       if((slot.mega||null)!==(d.mega||null))diffs.push({label:`${monKo} 메가`,from:megaLabel(slot),to:megaLabel(d)});
-      if(megChg)apply=s=>{s.mega=d.mega;s.megaStone=d.megaStone;if(s.mega)ensureMegaIcon(s.mega);};
+      const abChg=!!(d.ability&&(!slot.ability||slot.ability.key!==d.ability.key)); // 특성 인식
+      if(abChg)diffs.push({label:`${monKo} 특성`,from:slot.ability?slot.ability.ko:"없음",to:d.ability.ko});
+      const moveChanges=[];                                       // 기술: 감지된 슬롯만 비교(미감지 슬롯은 유지)
+      if(d.moves)d.moves.forEach((mv,mi)=>{if(!mv||!mv.key)return;
+        const cur=slot.moves&&slot.moves[mi];
+        if(!cur||cur.key!==mv.key){moveChanges.push({idx:mi,mv});diffs.push({label:`${monKo} 기술${mi+1}`,from:cur?cur.ko:"없음",to:mv.ko});}});
+      if(megChg||abChg||moveChanges.length)apply=s=>{
+        if(megChg){s.mega=d.mega;s.megaStone=d.megaStone;if(s.mega)ensureMegaIcon(s.mega);}
+        if(abChg)s.ability={key:d.ability.key,ko:d.ability.ko};
+        if(moveChanges.length){s.moves=s.moves||[null,null,null,null];while(s.moves.length<4)s.moves.push(null);
+          moveChanges.forEach(mc=>{s.moves[mc.idx]={key:mc.mv.key,ko:mc.mv.ko,type:mc.mv.type};});}
+      };
     }
     if(apply)proposals.push({j,diffs,apply});
   });
@@ -579,7 +601,7 @@ function mergeTeamDetails(sig,mons,img,rect){
   }
   proposals.forEach(p=>{const slot=team.details[p.j]||(team.details[p.j]={species:team.mons[p.j]});p.apply(slot);});
   saveTeams();
-  toast("세트 인식: "+(statTab?"수치·성격":"아이템")+" 반영");
+  toast("세트 인식: "+(statTab?"수치·성격":"특성·기술·아이템")+" 반영");
   renderTeamPanel(); // 패널·옆칸 상세 즉시 갱신(표시 중인 팀이면 새 수치 반영, dedup으로 무변화 시 no-op)
 }
 function natKoOf(n){return n?(DB.natures[n]?DB.natures[n].ko:n):"없음";}

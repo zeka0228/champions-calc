@@ -59,6 +59,13 @@ ipcMain.on("to-control",(e,ch,payload)=>{
 ipcMain.on("hud-interactive",(e,v)=>{
   if(overlayWin)overlayWin.setIgnoreMouseEvents(!v,{forward:true});
 });
+// 세트 편집(성격·특성·기술·아이템·노력치) 시 검색 입력에 키보드 포커스가 필요 → 편집 중에만 창을 포커스 가능하게.
+// 평소엔 focusable:false 유지(게임 포커스를 뺏지 않음). 편집 종료 시 다시 false로.
+ipcMain.on("overlay-focus",(e,v)=>{
+  if(!overlayWin)return;
+  overlayWin.setFocusable(!!v);
+  if(v)overlayWin.focus();
+});
 
 app.whenReady().then(()=>{
   try{DIAG_LOG=path.join(app.getPath("desktop"),"포챔스_diag.log");   // 세션마다 새로 시작
