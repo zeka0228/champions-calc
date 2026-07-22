@@ -311,6 +311,8 @@ async function onTeamRegister(f,a){
     $("mode").textContent="팀등록";$("conf").textContent="";
     const img={data:f.img.data,width:f.img.width,height:f.img.height};
     const r=TR.recognize(img,a.rect,SM,assetList,DB.creatures); // 타입 먼저 추론 → 후보 필터 → 아이콘 매칭
+    // [로컬] 팀등록 풀프레임 데이터셋 캡처 — 탭별 1회(능력/스탯). 5·6번 세트 미인식 진단용.
+    if(CAP&&r&&r.cells&&r.cells.length){try{CAP.teamregister(ipcRenderer,f.cv,TD.isStatTab(img,r.cells[0].card),r.mons,DB);}catch(e){}}
     if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
       if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
         ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
