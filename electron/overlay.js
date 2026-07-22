@@ -543,14 +543,26 @@ function readMonDetail(img,card,species,statTab){
   if(statTab){const s=TD.readStatTab(img,card);if(!s.ok)return null;
     return {tab:"stat",nature:TD.resolveNature(s.up,s.dn,DB.natures),evs:s.evs,stats:s.stats};}
   const ms=TD.detectMegaStone(img,card),mega=megaFormeOf(species); // 메가스톤+종족 메가폼 있으면 메가 확정
-  let ability=null,moves=null;                                     // 능력탭 텍스트 인식(렌더-매칭)
+  let ability=null,moves=null,item=null;                           // 능력탭 텍스트 인식(렌더-매칭)
   try{const rt=renderText();
     const ab=SD.detectAbility(img,card,species,DB,rt);
     if(ab&&ab.key)ability={key:ab.key,ko:ab.ko};
     const mv=SD.detectMoves(img,card,species,DB,window.LEARNSETS,rt); // 4개 {key,ko,type}(미감지=key null)
     if(mv&&mv.length)moves=mv.map(m=>(m&&m.key)?{key:m.key,ko:m.ko,type:m.type}:null);
-  }catch(e){dlog("특성·기술 인식 오류: "+e.message,"err");}
-  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega,ability,moves};
+    const provided=itemCandFor(species);                          // 채용률 held_item + 종족 메가스톤으로 후보 narrowing(매핑)
+    if(provided.length){const it=SD.detectItem(img,card,DB,rt,provided);if(it&&it.key)item={key:it.key,ko:it.ko};}
+  }catch(e){dlog("특성·기술·아이템 인식 오류: "+e.message,"err");}
+  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega,ability,moves,item};
+}
+// detectItem 후보 narrowing: 채용률(usage.it) held_item + 종족 메가스톤(usage 누락 대비). DB.items 전체(416)는 과다·부정확.
+function itemCandFor(species){
+  const out=[],seen=new Set();
+  const add=k=>{if(!k||seen.has(k)||!DB.items[k])return;seen.add(k);const v=DB.items[k];out.push({key:k,ko:(typeof v==="string")?v:v.ko});};
+  const u=usageOf(species);if(u&&u.it)for(const it of u.it)if(it[0]!=="__mega")add(it[0]);
+  const c=DB.creatures[species];
+  if(c&&c.formes)for(const f of c.formes)if(DB.creatures[f]&&DB.creatures[f].form==="mega")
+    for(const ik in DB.items)if(DB.items[ik].mega===f)add(ik);
+  return out;
 }
 function mergeTeamDetails(sig,mons,img,rect){
   const team=findTeam(sig);if(!team){dlog("세트병합: 미등록 팀 → 스킵");return;} // 등록된 팀에만 세트 누적
@@ -579,11 +591,14 @@ function mergeTeamDetails(sig,mons,img,rect){
       if(d.moves)d.moves.forEach((mv,mi)=>{if(!mv||!mv.key)return;
         const cur=slot.moves&&slot.moves[mi];
         if(!cur||cur.key!==mv.key){moveChanges.push({idx:mi,mv});diffs.push({label:`${monKo} 기술${mi+1}`,from:cur?cur.ko:"없음",to:mv.ko});}});
-      if(megChg||abChg||moveChanges.length)apply=s=>{
+      const itChg=!!(d.item&&(!slot.item||slot.item.key!==d.item.key)); // 아이템 인식(소지 아이템 텍스트)
+      if(itChg)diffs.push({label:`${monKo} 아이템`,from:slot.item?slot.item.ko:"없음",to:d.item.ko});
+      if(megChg||abChg||moveChanges.length||itChg)apply=s=>{
         if(megChg){s.mega=d.mega;s.megaStone=d.megaStone;if(s.mega)ensureMegaIcon(s.mega);}
         if(abChg)s.ability={key:d.ability.key,ko:d.ability.ko};
         if(moveChanges.length){s.moves=s.moves||[null,null,null,null];while(s.moves.length<4)s.moves.push(null);
           moveChanges.forEach(mc=>{s.moves[mc.idx]={key:mc.mv.key,ko:mc.mv.ko,type:mc.mv.type};});}
+        if(itChg)s.item={key:d.item.key,ko:d.item.ko};
       };
     }
     if(apply)proposals.push({j,diffs,apply});
