@@ -15,7 +15,8 @@ function get(url){return new Promise((res,rej)=>{https.get(url,{headers:{"User-A
 // PokéAPI가 한글 로컬라이제이션 없는 경쟁전 신아이템 수동 보충(확실한 것만; 틀린 이름은 넣지 않음).
 const MANUAL={"Booster Energy":"부스트에너지","Covert Cloak":"은신망토","Loaded Dice":"로디드다이스",
   "Punching Glove":"펀치글러브","Mirror Herb":"미러허브","Clear Amulet":"클리어참",
-  "Cornerstone Mask":"초석의가면","Wellspring Mask":"우물의가면","Hearthflame Mask":"화덕의가면"};
+  "Cornerstone Mask":"초석의가면","Wellspring Mask":"우물의가면","Hearthflame Mask":"화덕의가면",
+  "Fairy Feather":"요정의깃털","Leek":"대파"};   // 나무위키/확실값 보충(PokéAPI 한글 없음)
 
 (async()=>{
   const out={},fails=[];
