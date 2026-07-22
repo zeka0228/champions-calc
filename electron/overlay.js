@@ -549,21 +549,30 @@ function readMonDetail(img,card,species,statTab){
   try{const rt=renderText();
     const ab=SD.detectAbility(img,card,species,DB,rt);
     if(ab&&ab.key)ability={key:ab.key,ko:ab.ko};
-    const mv=SD.detectMoves(img,card,species,DB,window.LEARNSETS,rt); // 4개 {key,ko,type}(미감지=key null)
+    const u=usageOf(species);                                     // 채용률(live 우선·내장 폴백). usage 이름=DB 키(별도 매핑 불필요)
+    const usageMoves=(u&&u.mv)?usageList(u.mv).filter(o=>DB.moves[o.key]):undefined; // [{key,pct}] — 임계(5%)는 모듈이 적용
+    const mv=SD.detectMoves(img,card,species,DB,window.LEARNSETS,rt,usageMoves); // 4개 {key,ko,type}(미감지=key null)
     if(mv&&mv.length)moves=mv.map(m=>(m&&m.key)?{key:m.key,ko:m.ko,type:m.type}:null);
-    const provided=itemCandFor(species);                          // 채용률 held_item + 종족 메가스톤으로 후보 narrowing(매핑)
+    const provided=itemCandFor(species);                          // 채용률 held_item(pct 포함) + 종족 메가스톤 — 임계(3%)는 모듈이 적용
     if(provided.length){const it=SD.detectItem(img,card,DB,rt,provided);if(it&&it.key)item={key:it.key,ko:it.ko};}
   }catch(e){dlog("특성·기술·아이템 인식 오류: "+e.message,"err");}
   return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega,ability,moves,item};
 }
-// detectItem 후보 narrowing: 채용률(usage.it) held_item + 종족 메가스톤(usage 누락 대비). DB.items 전체(416)는 과다·부정확.
+// usage 배열 [[key,pct]] → [{key,pct}] (pct 0~100 정규화). live percentage_value가 0~1이면 ×100.
+function usageList(arr){
+  if(!arr||!arr.length)return undefined;
+  let mx=0;for(const e of arr)if(e[1]>mx)mx=e[1];
+  const scale=(mx>0&&mx<=1)?100:1;
+  return arr.map(([key,pct])=>({key,pct:(pct==null?null:pct*scale)}));
+}
+// detectItem 후보 narrowing: 채용률(usage.it) held_item[pct] + 종족 메가스톤(pct 없이=항상 유지). DB.items 전체(416)는 과다.
 function itemCandFor(species){
   const out=[],seen=new Set();
-  const add=k=>{if(!k||seen.has(k)||!DB.items[k])return;seen.add(k);const v=DB.items[k];out.push({key:k,ko:(typeof v==="string")?v:v.ko});};
-  const u=usageOf(species);if(u&&u.it)for(const it of u.it)if(it[0]!=="__mega")add(it[0]);
+  const add=(k,pct)=>{if(!k||seen.has(k)||!DB.items[k])return;seen.add(k);const v=DB.items[k];out.push({key:k,ko:(typeof v==="string")?v:v.ko,pct});};
+  const u=usageOf(species);if(u&&u.it)for(const o of usageList(u.it)||[])if(o.key!=="__mega")add(o.key,o.pct); // 임계(3%)는 모듈이 적용
   const c=DB.creatures[species];
   if(c&&c.formes)for(const f of c.formes)if(DB.creatures[f]&&DB.creatures[f].form==="mega")
-    for(const ik in DB.items)if(DB.items[ik].mega===f)add(ik);
+    for(const ik in DB.items)if(DB.items[ik].mega===f)add(ik,null);  // 메가스톤은 pct=null → 모듈이 항상 유지
   return out;
 }
 function mergeTeamDetails(sig,mons,img,rect){
