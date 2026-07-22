@@ -70,6 +70,9 @@ const toast=t=>{const e=$("toast");e.textContent=t;e.style.display="block";
   ipcRenderer.send("to-control","overlay-status",t);};
 // 진단 로그: control 창 "진단 로그" 패널에 시각순 누적(+ DevTools 콘솔). kind: ""|cap|ok|err
 const dlog=(msg,kind)=>{try{console.log("[진단] "+msg);ipcRenderer.send("to-control","diag",{line:msg,kind});}catch(e){}};
+// 팀등록은 매 틱 재처리 → 같은 HTML을 반복 write하면 스프라이트 깜빡임. 내용 바뀔 때만 갱신(화면 벗어나면 리셋).
+let _teamHtml=null;
+const setTeamContent=h=>{const e=$("content");if(_teamHtml!==h){_teamHtml=h;e.innerHTML=h;}};
 
 // ===== 캡처 =====
 let video=$("cap"),capReady=false;
@@ -106,16 +109,13 @@ async function tick(force){
   const f=grabFrame();if(!f)return;
   const h=SC.frameHash(f.img);
   const staticFrame=state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01;
-  if(!force&&staticFrame){
-    // 정지 화면 스킵 — 단, 팀등록은 진입 애니메이션 프레임서 인식 실패 후 "안정된 정지 프레임"을 놓치므로
-    // 프레임 변화 이후 몇 틱은 정지여도 재시도(유저가 전체화면 토글해야 인식되던 문제).
-    if(state.lastScreen==="teamregister"&&state.trRetry>0)state.trRetry--;
-    else return;
-  }else if(!staticFrame){
-    state.lastHash=h;state.trRetry=5;   // 프레임 변할 때마다 팀등록 재시도 카운트 리셋(전환 후 정지 프레임 확보)
-  }
+  // 정지 화면 스킵 — 단 팀등록은 예외: 16×9 밝기 해시가 거칠어 '다른 팀'을 정지로 오판(레이아웃 동일)하므로
+  // A팀→B팀 전환·오인식 재시도를 놓침. 팀등록 화면에선 정지여도 항상 재처리(등록 여부 무관, 인식될 때까지 시도).
+  if(!force&&staticFrame&&state.lastScreen!=="teamregister")return;
+  state.lastHash=h;
   const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
   const prev=state.lastScreen;state.lastScreen=a.screen;
+  if(a.screen!=="teamregister")_teamHtml=null;   // 팀등록 벗어나면 재렌더 dedupe 리셋(다른 화면이 content를 덮으므로)
   $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
   $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
   if(a.lowRes)toast(`캡처가 작아 인식 정확도 저하 가능 (게임영역 ${a.rect.w}px) — 고해상도 캡처 권장`);
@@ -335,8 +335,7 @@ function resampleRegion(img,rect,W){
 const RETRY_SCALES=[0.86,1.12,1.30,1.48,0.72,1.62];
 function recognizeRobust(img,rect){
   const base=TR.recognize(img,rect,SM,assetList,DB.creatures);
-  if(goodRecog(base))return {r:base,img,rect};
-  dlog("원본 인식 실패(중복/타입) → 멀티스케일 재시도");
+  if(goodRecog(base))return {r:base,img,rect,tag:"native"};
   const votes={};
   for(const m of RETRY_SCALES){
     const W=Math.round(rect.w*m);if(W<600||W>6000)continue;
@@ -347,9 +346,8 @@ function recognizeRobust(img,rect){
       if(v.n>=2)break;}                                    // 2표 합의 → 조기 종료(비용 절감)
   }
   const best=Object.values(votes).sort((a,b)=>b.n-a.n)[0];
-  if(best){dlog(`재시도 복구(다수결 ${best.n}표): ${teamName(best.r.mons)}`,"ok");return {r:best.r,img:best.img,rect:best.rect};}
-  dlog("재시도해도 유효 인식 없음 → 대기","err");
-  return {r:base,img,rect};
+  if(best)return {r:best.r,img:best.img,rect:best.rect,tag:"재시도 다수결"+best.n+"표"};
+  return {r:base,img,rect,tag:"재시도 실패"};
 }
 
 async function onTeamRegister(f,a){
@@ -360,16 +358,19 @@ async function onTeamRegister(f,a){
     const baseImg={data:f.img.data,width:f.img.width,height:f.img.height};
     const res=recognizeRobust(baseImg,a.rect);            // 원본→실패시 멀티스케일 재시도→다수결
     const r=res.r,img=res.img,rect=res.rect;              // 채택된(복구된) 프레임 좌표계로 이후 처리
-    const _cnt=r&&r.mons?r.mons.filter(Boolean).length:0;
+    const _good=goodRecog(r);
     const _tab=(r&&r.cells&&r.cells.length)?(TD.isStatTab(img,r.cells[0].card)?"스탯":"능력"):"?";
-    dlog(`팀등록 인식: 잡힌수=${_cnt}/6 유효=${goodRecog(r)} 탭=${_tab}`, goodRecog(r)?"ok":"err");
+    // 팀등록은 매 틱 재처리 → 결과가 바뀔 때만 로그(도배 방지)
+    const _key=res.tag+"|"+(r&&r.mons?TR.signature(r.mons):"none")+"|"+_good;
+    if(_key!==state._recogKey){state._recogKey=_key;
+      dlog(`팀등록 인식[${res.tag}]: 유효=${_good} 탭=${_tab} — ${r&&r.mons&&_good?teamName(r.mons):(r&&r.mons?r.mons.map(id=>DB.creatures[id]?DB.creatures[id].ko:"?").join(" "):"-")}`,_good?"ok":"err");}
     // [로컬] 팀등록 풀프레임 데이터셋 캡처 — 탭별 1회(능력/스탯). 원본 캔버스(f.cv) 저장.
     if(CAP&&r&&r.cells&&r.cells.length){try{const st=CAP.teamregister(ipcRenderer,f.cv,_tab==="스탯",r.mons,DB);if(st)dlog("스샷: "+st,"cap");}catch(e){dlog("스샷 오류: "+e.message,"err");}}
     else if(!CAP)dlog("스샷: capture.local.js 없음(캡처 비활성)","err");
     if(!goodRecog(r)){ // 유효 인식 실패(오인식 팀 등록 방지) → 대기
-      if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
+      if(!teamStore.ui&&!teamStore.lastSig)setTeamContent((r&&r.upscaled)
         ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
-        : '<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>';
+        : '<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>');
       state.busy=false;return;
     }
     const sig=TR.signature(r.mons);
@@ -454,7 +455,7 @@ function renderTeamPanel(mons,sig){
     h+=`<h3 style="margin-top:8px">등록된 팀</h3>`;
     teamStore.teams.forEach((t,i)=>{h+=`<div class="trow${t.sig===teamStore.activeSig?" act":""}"><span class="tnm">${t.name}</span><button class="tbtn del" onclick="__team('del',${i})">삭제</button></div>`;});
   }
-  el.innerHTML=h;
+  setTeamContent(h);
 }
 
 // ===== 세트 상세 (수치·성격·아이템·EV) — 능력탭/스탯탭 탭별 판독 → 등록팀에 누적 =====
@@ -532,7 +533,7 @@ function renderDetailCarousel(sig,idx){
   if(d.mega)h+=`<div class="dvitem">아이템 · 메가스톤 → ${DB.creatures[d.mega]?DB.creatures[d.mega].ko:d.mega} 진화</div>`;
   else if(d.megaStone)h+=`<div class="dvitem">아이템 · 메가스톤</div>`;
   h+=`<div class="small dim">특성 · 기술은 다음 단계(텍스트 인식)에서 표시됩니다</div></div>`;
-  el.innerHTML=h;
+  setTeamContent(h);
 }
 
 // 배틀: 등록된 활성 팀 6마리 중 내 활성 포켓몬을 이름바 아이콘으로 자동 식별(상대 식별과 동일 경로).
