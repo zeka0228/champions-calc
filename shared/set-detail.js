@@ -131,16 +131,30 @@ function moveRows(img,card){
     const v=p.reduce((s2,x)=>s2+(x-m)*(x-m),0);if(v<bestV){bestV=v;best=w;}}
   return best;
 }
+// 속성 아이콘은 각 타입 고유색(유저가 게임서 헥사로 읽은 TYPE_COLORS)의 "코어"가 near-exact.
+// 경계(안티에일리어싱)는 타입색에서 멀리 벗어나 애매(Dragon 경계가 Flying에 가까운 밝은 파랑 등).
+// → tight cutoff(near-exact만 투표): Dragon 코어(80,96,224 dist~0)=투표, 경계 픽셀(어느 타입서도 400+)=배제.
+// 저채도 타입(Normal 회색·Dark·Ghost·Rock)도 자기 색 near-exact라 같은 방식으로 잡힘.
+const MOVE_TYPE_TOL=560;   // 색거리² 허용(코어만; 흰글리프 안티에일리어싱 경계 배제).
+// ⚠ 정적 isLav는 Dragon(#5060e0=80,96,224)·Ghost·Psychic 등 파랑-보라 타입색을 배경으로 오분류(1423px 배제→Dragon 0표).
+//    → 동적 라벤더: 아이콘 왼쪽 갭(x0.50~0.57)에서 카드 실제 배경색 샘플 후 그 색에 가까운 것만 제외(Dragon dl=171>70 생존).
 function detectMoveType(img,card,row){
   const CW=card.x1-card.x0;
-  const x0=card.x0+Math.round(CW*MICONX[0]),x1=card.x0+Math.round(CW*MICONX[1]);
-  const v={};for(let y=row[0];y<row[1];y++)for(let x=x0;x<x1;x++){const[r,g,b]=px(img,x,y);
-    if(isLav(r,g,b))continue;                        // 카드 배경 배제
+  const ix0=card.x0+Math.round(CW*MICONX[0]),ix1=card.x0+Math.round(CW*MICONX[1]);
+  let LR=0,LG=0,LB=0,ln=0;const lx0=card.x0+Math.round(CW*0.50),lx1=card.x0+Math.round(CW*0.57);
+  for(let y=row[0];y<row[1];y++)for(let x=lx0;x<lx1;x++){const p=px(img,x,y);LR+=p[0];LG+=p[1];LB+=p[2];ln++;}
+  const lav=ln?[LR/ln,LG/ln,LB/ln]:[142,114,133];
+  const dl=(r,g,b)=>Math.abs(r-lav[0])+Math.abs(g-lav[1])+Math.abs(b-lav[2]);
+  const cv={};
+  for(let y=row[0];y<row[1];y++)for(let x=ix0;x<ix1;x++){const[r,g,b]=px(img,x,y);
+    if(dl(r,g,b)<70)continue;                        // 동적 배경(라벤더) 제외 — 타입색은 배경과 거리 있어 생존
     if(r>200&&g>200&&b>200)continue;                 // 흰 글리프 배제
-    if(r+g+b<80)continue;                            // 검은 테두리 배제 (Dark #504040=200은 통과)
-    let bt=null,bd=1500;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;bt=t;}}
-    if(bt)v[bt]=(v[bt]||0)+1;}                        // 저채도 허용(Normal 회색·Dark 저채도 검출 위해)
-  const a=Object.entries(v).sort((x,y)=>y[1]-x[1]);return (a[0]&&a[0][1]>=15)?a[0][0]:null;
+    if(r+g+b<70)continue;                            // 검은 테두리 배제
+    let bt=null,bd=MOVE_TYPE_TOL;for(const t in TYPE_COLORS){const c=TYPE_COLORS[t];const d=(r-c[0])**2+(g-c[1])**2+(b-c[2])**2;if(d<bd){bd=d;bt=t;}}
+    if(bt)cv[bt]=(cv[bt]||0)+1;                       // near-exact 타입색만(경계 애매픽셀 배제)
+  }
+  const a=Object.entries(cv).sort((x,y)=>y[1]-x[1]);
+  return (a[0]&&a[0][1]>=12)?a[0][0]:null;
 }
 // 후보 = 학습 가능(LEARNSETS[species]) ∩ 타입. 타입 null이면 학습 가능 전체.
 function moveCandidates(species,type,DB,LEARNSETS){
