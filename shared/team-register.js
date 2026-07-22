@@ -65,17 +65,27 @@ function cardVspan(img,rect,col){const{h}=rect;const[cL,cR]=col;
 
 // 셀(카드) 좌상단 아이콘 박스 6개를 화면 읽기순서(행우선: 좌,우,좌,우,좌,우)로 반환. 절대 픽셀.
 function detectCells(img,rect){
-  const cols=detectColumns(img,rect);
+  let cols=detectColumns(img,rect);
   if(cols.length<2)return null;
   cols.sort((a,b)=>a[0]-b[0]);              // 좌→우
+  // 능력탭 카드는 아이템/기술 사이 저밀도 밴드로 한 카드가 2컬럼으로 오분할됨(실측 [[202,699],[717,1001],…]).
+  // 작은 간격(카드폭 미만)은 같은 카드로 병합 → 카드 박스가 기술 영역까지 온전히, 종족 오분할도 방지.
+  const merged=[cols[0].slice()];
+  for(let i=1;i<cols.length;i++){const last=merged[merged.length-1];
+    const gap=cols[i][0]-last[1],mw=cols[i][1]-last[0];
+    if(gap<rect.w*0.02&&mw<rect.w*0.45)last[1]=cols[i][1];   // 같은 카드 → 병합(간격 작고 병합폭이 카드 한도 내)
+    else merged.push(cols[i].slice());}
+  cols=merged;
+  if(cols.length<2)return null;
   const spans=cols.slice(0,2).map(c=>cardVspan(img,rect,c));
   if(spans.some(s=>s.top<0||s.bot-s.top<30))return null;
   const cells=[];
   for(let r=0;r<3;r++)for(let ci=0;ci<2;ci++){
     const col=cols[ci],{top,bot}=spans[ci],rh=(bot-top)/3,cW=col[1]-col[0];
     const rowTop=Math.round(top+r*rh);
+    // 아이콘 폭 = 카드폭*0.11. 병합 후 cW는 전체 카드폭이라 non-split(원래 동작하던)과 동일 → extractIcon이 이름텍스트 배제.
     cells.push({box:{
-      x0:col[0]+Math.round(cW*0.005),y0:rowTop+Math.round(rh*0.00),
+      x0:col[0]+Math.round(cW*0.005),y0:rowTop,
       x1:col[0]+Math.round(cW*0.11), y1:rowTop+Math.round(rh*0.42)},
       card:{x0:col[0],y0:rowTop,x1:col[1],y1:rowTop+Math.round(rh)},col:ci,row:r});
   }
