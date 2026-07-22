@@ -67,7 +67,7 @@ A.init(DB,id=>liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||n
 
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
-const state={oppTeam:[],oppMons:[],oppSig:null,oppCur:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
+const state={oppTeam:[],oppMons:[],oppSig:null,oppCur:null,oppMegaSel:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
 // [로컬 전용] 데이터셋 캡처는 gitignore된 capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
 let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
 let assetList=null;
@@ -276,6 +276,7 @@ async function onBattle(f,a){
       const r=identifyOppIcon(region,barH,oppBattleIds()); // 선출 6마리 + 메가폼(실제 메가진화 아이콘 인식)
       if(r&&r.id!==state.oppCur){
         if(CAP)CAP.battle(ipcRenderer,f.cv,r.id,r.score,DB); // [로컬] 배틀 프레임 캡처(식별 변경 시)
+        if(baseOf(r.id)!==baseOf(state.oppCur||""))state.oppMegaSel=null; // 다른 상대로 바뀌면 메가 선택 초기화
         state.oppCur=r.id;await fetchLive(baseOf(r.id));renderBattle();
         toast("상대: "+koWithMega(r.id));
       }
@@ -288,23 +289,33 @@ function renderBattle(){
   if(!state.oppCur){el.innerHTML='<div class="small">상대 인식 대기 중…</div>';return;}
   if(!state.myMon){el.innerHTML='<div class="small">설정 창에서 내 포켓몬을 선택하세요</div>';return;}
   const opp=baseOf(state.oppCur),my=state.myMon;
-  // 상대가 메가진화(이름바 아이콘=메가) 또는 채용률상 메가 유력이면 메가 기준으로 표시.
-  // firstStrike/koMatrix/estimateRole은 topSet(opp)이 usage로 메가 종족값을 자동 반영하므로 계산은 이미 메가 기준.
-  const oppMega=/-Mega/.test(state.oppCur)?state.oppCur:oppLikelyMega(opp);
-  const oppKo=oppMega?(DB.creatures[oppMega]&&DB.creatures[oppMega].ko||DB.creatures[opp].ko):(DB.creatures[opp]?DB.creatures[opp].ko:state.oppCur);
+  // 상대가 메가진화(이름바 아이콘=메가) 또는 채용률상 메가 유력이면 메가 기준으로 표시/계산.
+  // firstStrike/koMatrix는 forme override(curMega)로 지정 메가 종족값·타입 사용(복수 메가 X/Y 즉시 비교).
+  const megas=megaFormesOf(opp);                          // 이 종족의 메가폼(0/1/2개)
+  const onField=/-Mega/.test(state.oppCur)?state.oppCur:null; // 필드에서 실제 메가진화 확인된 폼
+  const defMega=oppLikelyMega(opp);                       // 픽률 1위 기본 메가
+  let curMega=null;                                       // 표시/계산 메가폼: 유저선택 > 필드확인 > 픽률기본
+  if(megas.length)curMega=(state.oppMegaSel&&megas.includes(state.oppMegaSel))?state.oppMegaSel:(onField||defMega||null);
+  const oppKo=curMega?(DB.creatures[curMega]&&DB.creatures[curMega].ko||DB.creatures[opp].ko):(DB.creatures[opp]?DB.creatures[opp].ko:state.oppCur);
   const myTop=A.topSet(my);
   const myStats=E.calcStats(DB.creatures[myTop.cfg.forme||my],myTop.cfg.nature,myTop.cfg.pts);
-  const fsRes=A.firstStrike(myStats.spe,opp);
+  const fsRes=A.firstStrike(myStats.spe,opp,{forme:curMega});
   const lbl={neu:"무보정",semi:"준속",mx:"최속",scarf:"스카프",est:"픽률1위"};
-  let html=`<h3>${DB.creatures[my].ko} vs ${oppKo}${oppMega?' <span class="megab">MEGA</span>':""}</h3>
-    <div class="small">내 실속 ${myStats.spe} (픽률1위 세트 기준 — 추후 내 세트 연동)${oppMega?" · 상대 메가 기준":""}</div><div class="spd">`;
+  let html=`<h3>${DB.creatures[my].ko} vs ${oppKo}${curMega?' <span class="megab">MEGA</span>':""}</h3>`;
+  if(megas.length>=2){                                    // 복수 메가(리자몽·라이츄 X/Y) → 즉시 전환 비교 토글
+    html+=`<div class="megasel">`;
+    for(const m of megas){const mk=DB.creatures[m]?DB.creatures[m].ko:m;
+      html+=`<button class="megabtn${m===curMega?" act":""}" onclick="__oppmega('${m}')">${mk}${m===defMega?" ★":""}</button>`;}
+    html+=`</div>`;
+  }
+  html+=`<div class="small">내 실속 ${myStats.spe} (픽률1위 세트 기준 — 추후 내 세트 연동)${curMega?" · 상대 "+(onField?"메가(필드)":"메가 기준"):""}</div><div class="spd">`;
   for(const k of["neu","semi","mx","scarf","est"]){
     const s=fsRes.scenarios[k];if(s.spe==null)continue;
     const c=s.first==="me"?"win":s.first==="opp"?"lose":"tie";
     html+=`<span class="${c}">${lbl[k]} ${s.spe}</span>`;
   }
   html+=`</div><div class="small">${fsRes.estNote}</div>`;
-  const km=A.koMatrix(myTop.cfg,myTop.atkMoves,opp);
+  const km=A.koMatrix(myTop.cfg,myTop.atkMoves,opp,null,curMega);
   if(km){
     html+=`<h3 style="margin-top:8px">상대 → 나 (위험한 순)</h3>`;
     for(const l of km.theirs.slice(0,4))
@@ -315,6 +326,8 @@ function renderBattle(){
   }
   el.innerHTML=html;
 }
+// 복수 메가(X/Y) 선택 → 그 메가 종족값·타입 기준으로 스피드·데미지 재계산(즉시 비교)
+window.__oppmega=(m)=>{state.oppMegaSel=m;renderBattle();};
 
 // ===== 내 팀 등록 (팀 상세 화면 자동 인식 → 최대 6팀 유지 · localStorage) =====
 // 요구사항: 배틀 아닐 때만 인식(classify가 teamregister로 분리) · 포켓몬 리스트가 등록된 팀과 상이하면 새 팀
@@ -323,7 +336,8 @@ const MAX_TEAMS=6;
 // pinnedSig: 유저가 등록팀을 클릭해 "내 팀"으로 수동 고정한 서명(= 캡처 인식 무시 플래그). ⟳(재인식)로만 해제.
 // detailOpen/detailIdx: 세트 상세 옆칸(#detail) 표시 여부와 보고 있는 포켓몬 인덱스.
 const teamStore={teams:[],activeSig:null,rejectedSig:null,ui:null,lastSig:null,lastMons:null,
-  pinnedSig:null,detailOpen:false,detailIdx:0};
+  pinnedSig:null,detailOpen:false,detailIdx:0,
+  editing:null,editOptions:null,scanConflict:null}; // editing: 편집기 상태 / scanConflict: 재스캔 충돌 프롬프트
 try{const s=JSON.parse(localStorage.getItem("ov_teams"));if(Array.isArray(s))teamStore.teams=s;}catch(e){}
 function saveTeams(){try{localStorage.setItem("ov_teams",JSON.stringify(teamStore.teams));}catch(e){}}
 function teamName(mons){const g=mons.filter(Boolean);return g.map(id=>DB.creatures[id]?DB.creatures[id].ko:id).slice(0,3).join("·")+(g.length>3?" 외":"");}
@@ -489,8 +503,16 @@ function renderTeamPanel(){
   h+=`<div class="tteam">${monChips(disp.mons)}</div>`;
   const _k=(disp.team?teamName(disp.team.mons):"미등록")+":"+disp.pinned;
   if(renderTeamPanel._k!==_k){renderTeamPanel._k=_k;dlog(`패널: ${disp.team?teamName(disp.team.mons):"미등록 팀"}${disp.pinned?" (고정)":""}`);}
+  // 재스캔 충돌 프롬프트 — 수동 편집 팀의 스캔값이 현재 등록 정보와 다를 때(요구사항 6)
+  const sc=teamStore.scanConflict;
+  if(sc&&findTeam(sc.sig)){
+    h+=`<div class="tconf"><div class="tconf-h">⚠ 스캔 값이 현재 등록 정보와 다릅니다</div>`;
+    for(const df of sc.diffs.slice(0,8))
+      h+=`<div class="tconf-r"><span class="tconf-l">${df.label}</span><span class="tconf-d"><span class="cf-old">${df.from}</span> → <span class="cf-new">${df.to}</span></span></div>`;
+    h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('scanok')">덮어쓰기</button><button class="tbtn" onclick="__team('scanno')">유지(거절)</button></div></div>`;
+  }
   if(disp.team)                                            // 등록된 팀이면 세트 상세 열기 버튼
-    h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('detail')">세트 상세 ▸</button></div>`;
+    h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('detail')">세트 상세 ▸${disp.team.edited?' <span class="small">✎</span>':""}</button></div>`;
   const ui=teamStore.ui;
   if(disp.pinned){}                                        // 고정 중엔 캡처 인식 프롬프트 억제
   else if(ui&&ui.sig===live&&ui.mode==="confirm")
@@ -525,22 +547,44 @@ function mergeTeamDetails(sig,mons,img,rect){
   if(!cells||cells.length<6){dlog("세트병합: detectCells 실패(카드 못 잡음)","err");return;}
   const statTab=TD.isStatTab(img,cells[0].card);                  // 탭 판별: 수치가 잡히면 스탯탭
   team.details=team.details||team.mons.map(id=>({species:id}));
-  const used=new Array(team.mons.length).fill(false);let changed=false,filled=0;
+  const used=new Array(team.mons.length).fill(false);let read=0;const proposals=[];
   cells.forEach((cell,i)=>{
     const sp=mons[i],d=readMonDetail(img,cell.card,sp,statTab);if(!d)return;
     let j=team.mons.findIndex((m,k)=>m===sp&&!used[k]);if(j<0)j=team.mons.indexOf(sp);if(j<0)return;
-    used[j]=true;filled++;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
-    if(d.tab==="stat"){if(slot.nature!==d.nature||JSON.stringify(slot.evs)!==JSON.stringify(d.evs))changed=true;
-      slot.nature=d.nature;slot.evs=d.evs;slot.readStats=d.stats;}
-    else{if(slot.mega!==d.mega)changed=true;slot.mega=d.mega;slot.megaStone=d.megaStone;}
-    if(slot.mega)ensureMegaIcon(slot.mega);
+    used[j]=true;read++;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
+    const monKo=DB.creatures[sp]?DB.creatures[sp].ko:sp,diffs=[];let apply=null;
+    if(d.tab==="stat"){
+      const natChg=slot.nature!==d.nature,evChg=JSON.stringify(slot.evs||null)!==JSON.stringify(d.evs||null);
+      if(natChg)diffs.push({label:`${monKo} 성격`,from:natKoOf(slot.nature),to:natKoOf(d.nature)});
+      if(evChg)diffs.push({label:`${monKo} 노력치`,from:evStr(slot.evs),to:evStr(d.evs)});
+      if(natChg||evChg)apply=s=>{s.nature=d.nature;s.evs=d.evs;s.readStats=d.stats;};
+      else slot.readStats=d.stats;                              // 변화 없어도 실측 수치는 갱신(무해)
+    }else{
+      const megChg=(slot.mega||null)!==(d.mega||null)||!!slot.megaStone!==!!d.megaStone;
+      if((slot.mega||null)!==(d.mega||null))diffs.push({label:`${monKo} 메가`,from:megaLabel(slot),to:megaLabel(d)});
+      if(megChg)apply=s=>{s.mega=d.mega;s.megaStone=d.megaStone;if(s.mega)ensureMegaIcon(s.mega);};
+    }
+    if(apply)proposals.push({j,diffs,apply});
   });
-  dlog(`세트병합: 탭=${statTab?"스탯":"능력"} 채운칸=${filled}/6 변화=${changed?"O":"X"}`, filled>=5?"ok":"err");
-  if(!changed)return;                                            // 매 틱 재판독 시 스팸 방지
+  dlog(`세트병합: 탭=${statTab?"스탯":"능력"} 읽음=${read}/6 제안=${proposals.length}`, read>=5?"ok":"err");
+  if(!proposals.length)return;                                   // 변화 없음 → 매 틱 스팸 방지
+  const allDiffs=proposals.flatMap(p=>p.diffs);
+  if(team.edited&&allDiffs.length){                              // 수동 편집 팀 + 보이는 차이 → 덮어쓰기 확인(요구사항 6)
+    const key=JSON.stringify(allDiffs);
+    if(team.lastRejectedScan===key)return;                       // 이미 거절한 동일 스캔 → 재프롬프트 안 함
+    if(teamStore.scanConflict&&teamStore.scanConflict.sig===sig&&teamStore.scanConflict.key===key)return; // 이미 프롬프트 중
+    teamStore.scanConflict={sig,key,diffs:allDiffs,proposals};
+    dlog("스캔 충돌: 수동 편집 값과 상이 → 덮어쓰기 확인 프롬프트","err");
+    renderTeamPanel();return;
+  }
+  proposals.forEach(p=>{const slot=team.details[p.j]||(team.details[p.j]={species:team.mons[p.j]});p.apply(slot);});
   saveTeams();
   toast("세트 인식: "+(statTab?"수치·성격":"아이템")+" 반영");
   renderTeamPanel(); // 패널·옆칸 상세 즉시 갱신(표시 중인 팀이면 새 수치 반영, dedup으로 무변화 시 no-op)
 }
+function natKoOf(n){return n?(DB.natures[n]?DB.natures[n].ko:n):"없음";}
+function megaLabel(x){return x.mega?(DB.creatures[x.mega]?DB.creatures[x.mega].ko:x.mega):(x.megaStone?"메가스톤":"없음");}
+function evStr(evs){if(!evs)return "없음";const p=[];for(const[k,,lab]of STAT_ROWS)if(evs[k])p.push(`${lab}${evs[k]}`);return p.length?p.join(" "):"0";}
 // 메가 아이콘 확보: SPRITE_INDEX엔 메가폼이 없음 → 스프라이트 webp를 40x40으로 렌더해 배틀 매칭 후보에 추가.
 const megaIconTried={};
 function ensureMegaIcon(forme){
@@ -560,17 +604,22 @@ function expandTeamIds(team){const ids=team.mons.slice();
   return ids;}
 // 세트 상세 옆칸(#detail) — 표시 중인 팀의 1마리를 능력치·성격·특성·기술·아이템까지 펼쳐 보여줌.
 // #content(내 팀 목록)을 교체하지 않고 오른쪽 칸을 확장(요구사항 4). 포켓몬 선택은 칩 클릭 또는 ◀▶(요구사항 5).
-// 메가면 메가폼 스프라이트·능력치(메가 기준). 특성·기술은 아직 미인식 → 슬롯만 준비(다른 단계에서 채워짐).
+// 등록된 팀이면 각 값을 클릭해 수동 편집 가능(성격·노력치·특성·기술·아이템). 메가면 메가폼 스프라이트·능력치.
 function renderDetail(disp){
   const hud=$("hud");
   if(!teamStore.detailOpen||!disp||!disp.mons||!disp.mons.length){ // 닫힘/표시할 팀 없음 → 옆칸 숨김
     hud.classList.remove("detail");if(_detailHtml!==""){_detailHtml="";$("detail").innerHTML="";}return;
   }
+  if(teamStore.editing)return; // 편집기 열림 → 옆칸 DOM 유지(주기 재렌더가 편집기를 덮어쓰지 않게)
   const mons=disp.mons,n=mons.length;
   const idx=((teamStore.detailIdx%n)+n)%n;teamStore.detailIdx=idx;
   const team=disp.team,baseId=mons[idx],d=(team&&team.details&&team.details[idx])||{};
   const showId=d.mega||baseId,c=DB.creatures[showId]||DB.creatures[baseId];
-  const natKo=d.nature?(DB.natures[d.nature]?DB.natures[d.nature].ko:d.nature):"—";
+  const canEdit=!!team;                                    // 등록된 팀만 편집 가능
+  const ev_=canEdit?" editable":"";                        // 편집 가능 표시 클래스
+  const nv=d.nature&&DB.natures[d.nature];
+  const natKo=d.nature?(nv?nv.ko:d.nature):"—";
+  const natSub=nv&&nv.up?`↑${STAT_KO[nv.up]} ↓${STAT_KO[nv.dn]}`:(d.nature?"보정 없음":"");
   const st=(d.nature||d.evs)?computeStats(showId,d.nature,d.evs):null;
   const ty=((c&&c.types)||[]).map(t=>TYPE_KO[t]||t).join("·");
   let h=`<div class="dv"><div class="dvhead"><button class="tbtn nav" onclick="__team('dprev')">◀</button>`+
@@ -579,24 +628,165 @@ function renderDetail(disp){
   h+=`<div class="dvmon"><img src="../assets/sprites/${c?c.sprite:""}.webp" onerror="this.style.visibility='hidden'">`+
     `<div><span class="nm">${c?c.ko:baseId}</span>${d.mega?' <span class="megab">MEGA</span>':""}`+
     `<div class="small">${ty||"-"}</div></div></div>`;
-  h+=`<div class="dsec"><span class="dseclab">성격</span><span class="dsecval${d.nature?"":" dim"}">${natKo}</span></div>`;
-  if(st){h+=`<div class="dvstats">`;
-    for(const[k,lk,lab]of[["h","hp","HP"],["a","atk","공격"],["b","def","방어"],["c","spa","특공"],["d","spd","특방"],["s","spe","스피드"]]){
-      const ev=(d.evs&&d.evs[k])||0;
-      h+=`<div class="dvst"><span class="dvlab">${lab}</span><span class="dvnum">${st[lk]}</span><span class="dvev">${ev?"노력 "+ev:""}</span></div>`;}
+  // 성격 (클릭 → 편집)
+  h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','nature')"`:""}><span class="dseclab">성격</span>`+
+     `<span class="dsecval${d.nature?"":" dim"}">${natKo}${natSub?` <span class="edsub">${natSub}</span>`:""}</span></div>`;
+  // 능력치 (파란 노력치 클릭 → 편집)
+  if(st){h+=`<div class="dseclab" style="margin-top:6px">능력치</div><div class="dvstats">`;
+    for(const[k,lk,lab]of STAT_ROWS){const ev=(d.evs&&d.evs[k])||0;
+      h+=`<div class="dvst"><span class="dvlab">${lab}</span><span class="dvnum">${st[lk]}</span>`+
+         `<span class="dvev${canEdit?" editable":""}" ${canEdit?`onclick="__team('edit','ev','${k}')"`:""}>${ev?"노력 "+ev:(canEdit?"노력 +":"")}</span></div>`;}
     h+=`</div>`;
     if(d.mega)h+=`<div class="small ok">↑ 메가진화 기준 능력치 (비교에 사용)</div>`;
-  }else h+=`<div class="small">${team?"스테이터스 탭을 띄우면 수치·성격이 채워집니다":"이 팀을 등록하면 세트가 채워집니다"}</div>`;
-  h+=`<div class="dsec"><span class="dseclab">특성</span><span class="dsecval dim">인식 예정</span></div>`;
+  }else h+=`<div class="small">${canEdit?"스테이터스 탭을 띄우거나 아래 값을 눌러 직접 입력":"이 팀을 등록하면 세트가 채워집니다"}</div>`;
+  // 특성 (클릭 → 편집)
+  h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','ability')"`:""}><span class="dseclab">특성</span>`+
+     `<span class="dsecval${d.ability?"":" dim"}">${d.ability?d.ability.ko:"—"}</span></div>`;
+  // 기술 (각 슬롯 클릭 → 편집)
   h+=`<div class="dseclab" style="margin-top:6px">기술</div><div class="dvmoves">`;
-  for(let m=0;m<4;m++)h+=`<div class="dmove dim">기술 ${m+1} · 인식 예정</div>`;
+  for(let m=0;m<4;m++){const mv=d.moves&&d.moves[m];
+    h+=`<div class="dmove${canEdit?" editable":""}${mv?"":" dim"}" ${canEdit?`onclick="__team('edit','move','${m}')"`:""}>`+
+       (mv?`<span class="mvt" style="background:${TYPE_HEX[mv.type]||'#555'}">${TYPE_KO[mv.type]||mv.type||""}</span> ${mv.ko}`:`기술 ${m+1} ${canEdit?"+":"· 인식 예정"}`)+`</div>`;}
   h+=`</div>`;
-  const item=d.mega?`메가스톤 → ${DB.creatures[d.mega]?DB.creatures[d.mega].ko:d.mega} 진화`:(d.megaStone?"메가스톤":"—");
-  h+=`<div class="dsec"><span class="dseclab">아이템</span><span class="dsecval${(d.mega||d.megaStone)?"":" dim"}">${item}</span></div>`;
-  h+=`<div class="small dim">특성 · 기술은 텍스트 인식 단계에서 채워집니다</div></div>`;
+  // 아이템 (클릭 → 편집)
+  const itKo=d.item?d.item.ko:(d.mega?`메가스톤 → ${DB.creatures[d.mega]?DB.creatures[d.mega].ko:d.mega}`:(d.megaStone?"메가스톤":"—"));
+  h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','item')"`:""}><span class="dseclab">아이템</span>`+
+     `<span class="dsecval${(d.item||d.mega||d.megaStone)?"":" dim"}">${itKo}</span></div>`;
+  h+=`</div>`;
   hud.classList.add("detail");
   setDetailContent(h);
 }
+// ===== 세트 편집기(#detail 옆칸에서 인라인) — 성격·노력치·특성·기술·아이템 수동 설정 =====
+// 편집 대상 = 표시 중인 등록팀의 detailIdx 포켓몬. 편집 중엔 renderDetail이 조기 반환해 편집기 DOM 유지.
+function openEdit(field,extra){
+  const disp=displayTeam();if(!disp.team)return;                 // 미등록 팀은 편집 불가
+  const n=disp.mons.length,idx=((teamStore.detailIdx%n)+n)%n;teamStore.detailIdx=idx;
+  teamStore.detailOpen=true;
+  teamStore.editing={field,sig:disp.team.sig,idx,query:"",moveIdx:field==="move"?(+extra):null,evKey:field==="ev"?extra:null};
+  openEditor();
+}
+function editTeamSlot(){const e=teamStore.editing;if(!e)return null;const t=findTeam(e.sig);if(!t)return null;
+  t.details=t.details||t.mons.map(id=>({species:id}));
+  return t.details[e.idx]||(t.details[e.idx]={species:t.mons[e.idx]});}
+function openEditor(){
+  const e=teamStore.editing;if(!e)return;
+  const team=findTeam(e.sig);if(!team){closeEditor(true);return;}
+  const baseId=team.mons[e.idx],c=DB.creatures[baseId];
+  const titles={nature:"성격 선택",ability:"특성 선택",move:`기술 ${(+e.moveIdx)+1} 선택`,item:"아이템 선택",ev:`${STAT_KO[EV_LONG[e.evKey]]} 노력치`};
+  let h=`<div class="ed"><div class="edhead"><button class="tbtn nav" onclick="__team('ecancel')">◀</button>`+
+    `<span class="edtitle">${c?c.ko:baseId} · ${titles[e.field]}</span></div>`;
+  if(e.field==="ev"){
+    const cur=currentEv();
+    h+=`<div class="edev"><button class="tbtn" onclick="__team('evadd',-4)">−4</button>`+
+       `<input id="evInput" type="number" min="0" max="252" oninput="__evInput(this.value)">`+
+       `<button class="tbtn" onclick="__team('evadd',4)">+4</button></div>`+
+       `<div class="edevq"><button class="tbtn" onclick="__team('evset',0)">0</button>`+
+       `<button class="tbtn" onclick="__team('evset',252)">252</button>`+
+       `<span class="small">실능력치 <b id="evStat">-</b></span></div>`+
+       `<div class="tbtns"><button class="tbtn ok" onclick="__team('ecancel')">완료</button></div>`;
+    h+=`</div>`;
+    $("hud").classList.add("detail");$("detail").innerHTML=h;_detailHtml=null;
+    ipcRenderer.send("overlay-focus",true);
+    const s=$("evStat");if(s)s.textContent=evPreview();
+    const i=$("evInput");if(i){i.value=cur;i.focus();i.select();}
+    return;
+  }
+  h+=`<input id="editSearch" placeholder="검색…" oninput="__editInput(this.value)">`;
+  h+=`<div id="editList" class="edlist"></div>`;
+  if(e.field==="move"||e.field==="item")h+=`<div class="tbtns"><button class="tbtn del" onclick="__team('clearf')">비우기</button></div>`;
+  h+=`</div>`;
+  $("hud").classList.add("detail");$("detail").innerHTML=h;_detailHtml=null; // 편집기 직접 write → 다음 일반 렌더 강제 재작성
+  ipcRenderer.send("overlay-focus",true);
+  const i=$("editSearch");if(i){i.value=e.query||"";i.focus();}
+  renderEditList();
+}
+function renderEditList(){
+  const e=teamStore.editing;if(!e)return;const team=findTeam(e.sig);if(!team)return;
+  const baseId=team.mons[e.idx],q=(e.query||"").trim();
+  let opts=[];
+  if(e.field==="nature")opts=natureOptions(q);
+  else if(e.field==="ability")opts=abilityOptions(baseId,q);
+  else if(e.field==="move")opts=moveOptions(baseId,q);
+  else if(e.field==="item")opts=itemOptions(baseId,q);
+  teamStore.editOptions=opts;
+  const el=$("editList");if(!el)return;
+  el.innerHTML=opts.length?opts.slice(0,80).map((o,i)=>`<div class="edopt" onclick="__team('pick',${i})">${o.label}</div>`).join("")
+    :`<div class="small dim" style="padding:8px">결과 없음</div>`;
+}
+window.__editInput=(val)=>{if(teamStore.editing){teamStore.editing.query=val;renderEditList();}};
+window.__evInput=(val)=>{setEv(val,true);const s=$("evStat");if(s)s.textContent=evPreview();}; // 타이핑: 저장만(재렌더 X, 포커스 유지)
+// 옵션 빌더 — {key, ko, label(HTML), ...} 배열. 한글/영문키 검색.
+function natureOptions(q){
+  return Object.entries(DB.natures).map(([key,v])=>{
+    const sub=v.up?`↑${STAT_KO[v.up]} ↓${STAT_KO[v.dn]}`:"보정 없음";
+    return {key,ko:v.ko,label:`<b>${v.ko}</b> <span class="edsub">${sub}</span>`};})
+    .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(q.toLowerCase()))
+    .sort((a,b)=>a.ko.localeCompare(b.ko,"ko"));
+}
+function abilityOptions(species,q){
+  const c=DB.creatures[species];if(!c||!c.ab)return [];
+  return [...new Set(Object.values(c.ab))].map(key=>{
+    const av=DB.abilities[key];const ko=(typeof av==="string")?av:((av&&av.ko)||key);
+    return {key,ko,label:`<b>${ko}</b>`};})
+    .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(q.toLowerCase()));
+}
+function moveOptions(species,q){
+  const ls=(window.LEARNSETS&&window.LEARNSETS[species])||[],ql=q.toLowerCase();
+  return ls.map(key=>{const mv=DB.moves[key];if(!mv)return null;
+    return {key,ko:mv.ko,type:mv.t,label:`<span class="mvt" style="background:${TYPE_HEX[mv.t]||'#555'}">${TYPE_KO[mv.t]||mv.t}</span> <b>${mv.ko}</b> <span class="edsub">${mv.c==="Status"?"변화":mv.p}</span>`};})
+    .filter(Boolean)
+    .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(ql))
+    .sort((a,b)=>a.ko.localeCompare(b.ko,"ko"));
+}
+function itemOptions(species,q){
+  const c=DB.creatures[species];
+  const myMegas=((c&&c.formes)||[]).filter(f=>DB.creatures[f]&&DB.creatures[f].form==="mega");
+  const ql=q.toLowerCase();
+  return Object.entries(DB.items).map(([key,v])=>{
+    if(v.mega&&!myMegas.includes(v.mega))return null;            // 다른 포켓몬 전용 메가스톤 제외(요구사항)
+    return {key,ko:v.ko,mega:v.mega||null,label:`<b>${v.ko}</b>${v.mega?' <span class="edsub">메가스톤</span>':""}`};})
+    .filter(Boolean)
+    .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(ql))
+    .sort((a,b)=>(a.mega?0:1)-(b.mega?0:1)||a.ko.localeCompare(b.ko,"ko")); // 내 메가스톤 먼저
+}
+function commitEdit(mut){const slot=editTeamSlot();if(!slot)return;const team=findTeam(teamStore.editing.sig);
+  mut(slot);team.edited=true;team.lastRejectedScan=null;saveTeams();}
+function pickOption(i){
+  const e=teamStore.editing,o=teamStore.editOptions&&teamStore.editOptions[i];if(!e||!o)return;
+  if(e.field==="nature")commitEdit(s=>s.nature=o.key);
+  else if(e.field==="ability")commitEdit(s=>s.ability={key:o.key,ko:o.ko});
+  else if(e.field==="move")commitEdit(s=>{s.moves=s.moves||[null,null,null,null];while(s.moves.length<4)s.moves.push(null);s.moves[e.moveIdx]={key:o.key,ko:o.ko,type:o.type};});
+  else if(e.field==="item")commitEdit(s=>{s.item={key:o.key,ko:o.ko};
+    if(o.mega){s.mega=o.mega;s.megaStone=true;ensureMegaIcon(o.mega);}else{s.mega=null;s.megaStone=false;}});
+  closeEditor(true);
+}
+function clearField(){
+  const e=teamStore.editing;if(!e)return;
+  if(e.field==="move")commitEdit(s=>{if(s.moves)s.moves[e.moveIdx]=null;});
+  else if(e.field==="item")commitEdit(s=>{s.item=null;s.mega=null;s.megaStone=false;});
+  closeEditor(true);
+}
+function currentEv(){const e=teamStore.editing;if(!e)return 0;const t=findTeam(e.sig);const d=(t&&t.details&&t.details[e.idx])||{};return (d.evs&&d.evs[e.evKey])||0;}
+function setEv(val,silent){const e=teamStore.editing;if(!e)return 0;const slot=editTeamSlot();if(!slot)return 0;
+  slot.evs=slot.evs||{h:0,a:0,b:0,c:0,d:0,s:0};
+  const v=Math.max(0,Math.min(252,Math.round(+val||0)));slot.evs[e.evKey]=v;
+  const team=findTeam(e.sig);team.edited=true;team.lastRejectedScan=null;saveTeams();return v;}
+function evPreview(){const e=teamStore.editing;if(!e)return "-";const t=findTeam(e.sig);const d=(t&&t.details&&t.details[e.idx])||{};
+  const showId=d.mega||t.mons[e.idx];const st=computeStats(showId,d.nature,d.evs);return st?st[EV_LONG[e.evKey]]:"-";}
+function closeEditor(rerender){
+  const was=!!teamStore.editing;teamStore.editing=null;teamStore.editOptions=null;
+  if(was)ipcRenderer.send("overlay-focus",false);
+  _detailHtml=null;                                              // 다음 일반 렌더가 편집기 DOM을 세트뷰로 교체
+  if(rerender!==false)renderTeamPanel();
+}
+// 재스캔 충돌 해소
+function applyScanConflict(){const sc=teamStore.scanConflict;if(!sc)return;const team=findTeam(sc.sig);
+  if(team){team.details=team.details||team.mons.map(id=>({species:id}));
+    sc.proposals.forEach(p=>{const slot=team.details[p.j]||(team.details[p.j]={species:team.mons[p.j]});p.apply(slot);});saveTeams();}
+  teamStore.scanConflict=null;toast("스캔 값으로 덮어썼습니다");renderTeamPanel();}
+function dismissScanConflict(){const sc=teamStore.scanConflict;if(!sc)return;const team=findTeam(sc.sig);
+  if(team){team.lastRejectedScan=sc.key;saveTeams();}                 // 동일 스캔 재프롬프트 방지
+  teamStore.scanConflict=null;toast("수동 값 유지");renderTeamPanel();}
 
 // 배틀: 등록된 활성 팀 6마리 중 내 활성 포켓몬을 이름바 아이콘으로 자동 식별(상대 식별과 동일 경로).
 // 신뢰 임계(identifyOppIcon의 ABS_THR/MARGIN) 통과 시에만 수동 선택을 대체 → 불확실하면 수동 유지(오표시 방지).
