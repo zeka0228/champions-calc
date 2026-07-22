@@ -480,6 +480,8 @@ window.__team=(action,idx,extra)=>{
   else if(action==="clearf")clearField();             // 기술/아이템 비우기
   else if(action==="evset"){setEv(idx);openEditor();} // 노력치 값 설정(버튼)
   else if(action==="evadd"){setEv(currentEv()+(+idx));openEditor();}
+  else if(action==="evmax"){const sl=editTeamSlot();if(sl){const rem=EV_MAX-(evSum(sl.evs)-(sl.evs&&sl.evs[teamStore.editing.evKey]||0));setEv(rem);}openEditor();} // 남은 만큼 최대 채움
+  else if(action==="evreset")evReset();               // 노력치 전부 0
   else if(action==="ecancel")closeEditor(true);
   // 재스캔 충돌 — 수동 편집 팀의 스캔값이 다를 때
   else if(action==="scanok")applyScanConflict();
@@ -577,7 +579,7 @@ function mergeTeamDetails(sig,mons,img,rect){
     used[j]=true;read++;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
     const monKo=DB.creatures[sp]?DB.creatures[sp].ko:sp,diffs=[];let apply=null;
     if(d.tab==="stat"){
-      const natChg=slot.nature!==d.nature,evChg=JSON.stringify(slot.evs||null)!==JSON.stringify(d.evs||null);
+      const natChg=slot.nature!==d.nature,evChg=!evEq(slot.evs,d.evs);  // EV는 값 기반 비교(키 순서 오탐 방지)
       if(natChg)diffs.push({label:`${monKo} 성격`,from:natKoOf(slot.nature),to:natKoOf(d.nature)});
       if(evChg)diffs.push({label:`${monKo} 노력치`,from:evStr(slot.evs),to:evStr(d.evs)});
       if(natChg||evChg)apply=s=>{s.nature=d.nature;s.evs=d.evs;s.readStats=d.stats;};
@@ -665,11 +667,14 @@ function renderDetail(disp){
   h+=`<div class="dvmon"><img src="../assets/sprites/${c?c.sprite:""}.webp" onerror="this.style.visibility='hidden'">`+
     `<div><span class="nm">${c?c.ko:baseId}</span>${d.mega?' <span class="megab">MEGA</span>':""}`+
     `<div class="small">${ty||"-"}</div></div></div>`;
+  const em=canEdit?`<span class="edmark">✎</span>`:"";       // 편집 가능(클릭) 표시
   // 성격 (클릭 → 편집)
   h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','nature')"`:""}><span class="dseclab">성격</span>`+
-     `<span class="dsecval${d.nature?"":" dim"}">${natKo}${natSub?` <span class="edsub">${natSub}</span>`:""}</span></div>`;
-  // 능력치 (파란 노력치 클릭 → 편집)
-  if(st){h+=`<div class="dseclab" style="margin-top:6px">능력치</div><div class="dvstats">`;
+     `<span class="dsecright"><span class="dsecval${d.nature?"":" dim"}">${natKo}${natSub?` <span class="edsub">${natSub}</span>`:""}</span>${em}</span></div>`;
+  // 능력치 + 노력치 초기화 버튼(요구사항)
+  if(st){const evT=evSum(d.evs);
+    h+=`<div class="dsecrow"><span class="dseclab">능력치 <span class="edsub">노력합 ${evT}/66</span></span>`+
+       (canEdit?`<button class="tbtn mini" onclick="__team('evreset')">노력치 초기화</button>`:"")+`</div><div class="dvstats">`;
     for(const[k,lk,lab]of STAT_ROWS){const ev=(d.evs&&d.evs[k])||0;
       h+=`<div class="dvst"><span class="dvlab">${lab}</span><span class="dvnum">${st[lk]}</span>`+
          `<span class="dvev${canEdit?" editable":""}" ${canEdit?`onclick="__team('edit','ev','${k}')"`:""}>${ev?"노력 "+ev:(canEdit?"노력 +":"")}</span></div>`;}
@@ -678,17 +683,17 @@ function renderDetail(disp){
   }else h+=`<div class="small">${canEdit?"스테이터스 탭을 띄우거나 아래 값을 눌러 직접 입력":"이 팀을 등록하면 세트가 채워집니다"}</div>`;
   // 특성 (클릭 → 편집)
   h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','ability')"`:""}><span class="dseclab">특성</span>`+
-     `<span class="dsecval${d.ability?"":" dim"}">${d.ability?d.ability.ko:"—"}</span></div>`;
+     `<span class="dsecright"><span class="dsecval${d.ability?"":" dim"}">${d.ability?d.ability.ko:"—"}</span>${em}</span></div>`;
   // 기술 (각 슬롯 클릭 → 편집)
   h+=`<div class="dseclab" style="margin-top:6px">기술</div><div class="dvmoves">`;
   for(let m=0;m<4;m++){const mv=d.moves&&d.moves[m];
     h+=`<div class="dmove${canEdit?" editable":""}${mv?"":" dim"}" ${canEdit?`onclick="__team('edit','move','${m}')"`:""}>`+
-       (mv?`<span class="mvt" style="background:${TYPE_HEX[mv.type]||'#555'}">${TYPE_KO[mv.type]||mv.type||""}</span> ${mv.ko}`:`기술 ${m+1} ${canEdit?"+":"· 인식 예정"}`)+`</div>`;}
+       (mv?`<span class="mvt" style="background:${TYPE_HEX[mv.type]||'#555'}">${TYPE_KO[mv.type]||mv.type||""}</span> ${mv.ko}`:`기술 ${m+1} ${canEdit?"추가":"· 인식 예정"}`)+em+`</div>`;}
   h+=`</div>`;
   // 아이템 (클릭 → 편집)
   const itKo=d.item?d.item.ko:(d.mega?`메가스톤 → ${DB.creatures[d.mega]?DB.creatures[d.mega].ko:d.mega}`:(d.megaStone?"메가스톤":"—"));
   h+=`<div class="dsec${ev_}" ${canEdit?`onclick="__team('edit','item')"`:""}><span class="dseclab">아이템</span>`+
-     `<span class="dsecval${(d.item||d.mega||d.megaStone)?"":" dim"}">${itKo}</span></div>`;
+     `<span class="dsecright"><span class="dsecval${(d.item||d.mega||d.megaStone)?"":" dim"}">${itKo}</span>${em}</span></div>`;
   h+=`</div>`;
   hud.classList.add("detail");
   setDetailContent(h);
@@ -698,10 +703,13 @@ function renderDetail(disp){
 function openEdit(field,extra){
   const disp=displayTeam();if(!disp.team)return;                 // 미등록 팀은 편집 불가
   const n=disp.mons.length,idx=((teamStore.detailIdx%n)+n)%n;teamStore.detailIdx=idx;
-  teamStore.detailOpen=true;
+  teamStore.detailOpen=true;teamStore.evWarn=null;
   teamStore.editing={field,sig:disp.team.sig,idx,query:"",moveIdx:field==="move"?(+extra):null,evKey:field==="ev"?extra:null};
   openEditor();
 }
+const EV_MAX=66,EV_KEYS=["h","a","b","c","d","s"];               // Champions 노력치 총합 상한(실측: usage sp 스프레드 합=66)
+function evSum(evs){if(!evs)return 0;return EV_KEYS.reduce((t,k)=>t+(evs[k]||0),0);}
+function evEq(a,b){a=a||{};b=b||{};return EV_KEYS.every(k=>(a[k]||0)===(b[k]||0));}
 function editTeamSlot(){const e=teamStore.editing;if(!e)return null;const t=findTeam(e.sig);if(!t)return null;
   t.details=t.details||t.mons.map(id=>({species:id}));
   return t.details[e.idx]||(t.details[e.idx]={species:t.mons[e.idx]});}
@@ -713,13 +721,15 @@ function openEditor(){
   let h=`<div class="ed"><div class="edhead"><button class="tbtn nav" onclick="__team('ecancel')">◀</button>`+
     `<span class="edtitle">${c?c.ko:baseId} · ${titles[e.field]}</span></div>`;
   if(e.field==="ev"){
-    const cur=currentEv();
-    h+=`<div class="edev"><button class="tbtn" onclick="__team('evadd',-4)">−4</button>`+
-       `<input id="evInput" type="number" min="0" max="252" oninput="__evInput(this.value)">`+
+    const cur=currentEv(),slot=(team.details&&team.details[e.idx])||{},others=evSum(slot.evs)-cur,remain=Math.max(0,EV_MAX-others);
+    h+=`<div class="small edbudget" id="edbudget">노력 총합 <b>${others+cur}</b> / ${EV_MAX} · 이 스탯 최대 ${remain}</div>`+
+       `<div class="edev"><button class="tbtn" onclick="__team('evadd',-4)">−4</button>`+
+       `<input id="evInput" type="number" min="0" max="${EV_MAX}" oninput="__evInput(this.value)">`+
        `<button class="tbtn" onclick="__team('evadd',4)">+4</button></div>`+
        `<div class="edevq"><button class="tbtn" onclick="__team('evset',0)">0</button>`+
-       `<button class="tbtn" onclick="__team('evset',252)">252</button>`+
+       `<button class="tbtn" onclick="__team('evmax')">최대(${remain})</button>`+
        `<span class="small">실능력치 <b id="evStat">-</b></span></div>`+
+       `<div class="evwarn" id="evWarn">${teamStore.evWarn||""}</div>`+
        `<div class="tbtns"><button class="tbtn ok" onclick="__team('ecancel')">완료</button></div>`;
     h+=`</div>`;
     $("hud").classList.add("detail");$("detail").innerHTML=h;_detailHtml=null;
@@ -755,7 +765,10 @@ function renderEditList(){
     :`<div class="small dim" style="padding:8px">결과 없음</div>`;
 }
 window.__editInput=(val)=>{if(teamStore.editing){teamStore.editing.query=val;renderEditList();}};
-window.__evInput=(val)=>{setEv(val,true);const s=$("evStat");if(s)s.textContent=evPreview();}; // 타이핑: 저장만(재렌더 X, 포커스 유지)
+// 타이핑: 저장 시도(재렌더 X, 포커스 유지). 총합 66 초과면 경고 표시 + 실패(적용 안 됨).
+window.__evInput=(val)=>{const r=setEv(val);const w=$("evWarn");if(w)w.textContent=teamStore.evWarn||"";
+  if(r!==null){const s=$("evStat");if(s)s.textContent=evPreview();const b=$("edbudget");
+    if(b){const sl=editTeamSlot(),tot=evSum(sl&&sl.evs),cur=currentEv();b.innerHTML=`노력 총합 <b>${tot}</b> / ${EV_MAX} · 이 스탯 최대 ${Math.max(0,EV_MAX-(tot-cur))}`;}}};
 // 옵션 빌더 — {key, ko, label(HTML), ...} 배열. 한글/영문키 검색.
 function natureOptions(q){
   return Object.entries(DB.natures).map(([key,v])=>{
@@ -816,14 +829,25 @@ function clearField(){
   closeEditor(true);
 }
 function currentEv(){const e=teamStore.editing;if(!e)return 0;const t=findTeam(e.sig);const d=(t&&t.details&&t.details[e.idx])||{};return (d.evs&&d.evs[e.evKey])||0;}
-function setEv(val,silent){const e=teamStore.editing;if(!e)return 0;const slot=editTeamSlot();if(!slot)return 0;
+// 노력치 설정 — 총합 66 초과 시 경고 + 실패 처리(적용 안 함, null 반환). 성공 시 값 반환.
+function setEv(val){const e=teamStore.editing;if(!e)return null;const slot=editTeamSlot();if(!slot)return null;
   slot.evs=slot.evs||{h:0,a:0,b:0,c:0,d:0,s:0};
-  const v=Math.max(0,Math.min(252,Math.round(+val||0)));slot.evs[e.evKey]=v;
+  let v=Math.round(+val||0);if(v<0)v=0;if(v>EV_MAX)v=EV_MAX;
+  const others=evSum(slot.evs)-(slot.evs[e.evKey]||0);
+  if(others+v>EV_MAX){teamStore.evWarn=`⚠ 노력치 총합 ${EV_MAX} 초과 불가 — 다른 스탯 합 ${others} + ${v} = ${others+v}. 값을 다시 확인하세요.`;return null;} // 불가능한 값 → 실패
+  teamStore.evWarn=null;slot.evs[e.evKey]=v;
   const team=findTeam(e.sig);team.edited=true;team.lastRejectedScan=null;saveTeams();return v;}
 function evPreview(){const e=teamStore.editing;if(!e)return "-";const t=findTeam(e.sig);const d=(t&&t.details&&t.details[e.idx])||{};
   const showId=d.mega||t.mons[e.idx];const st=computeStats(showId,d.nature,d.evs);return st?st[EV_LONG[e.evKey]]:"-";}
+// 노력치 초기화 — 표시 중인 팀의 현재 상세 포켓몬 EV 전부 0
+function evReset(){const disp=displayTeam();if(!disp.team)return;
+  const n=disp.mons.length,idx=((teamStore.detailIdx%n)+n)%n;
+  disp.team.details=disp.team.details||disp.team.mons.map(id=>({species:id}));
+  const slot=disp.team.details[idx]||(disp.team.details[idx]={species:disp.team.mons[idx]});
+  slot.evs={h:0,a:0,b:0,c:0,d:0,s:0};disp.team.edited=true;disp.team.lastRejectedScan=null;saveTeams();
+  toast("노력치 초기화");renderTeamPanel();}
 function closeEditor(rerender){
-  const was=!!teamStore.editing;teamStore.editing=null;teamStore.editOptions=null;
+  const was=!!teamStore.editing;teamStore.editing=null;teamStore.editOptions=null;teamStore.evWarn=null;
   if(was)ipcRenderer.send("overlay-focus",false);
   _detailHtml=null;                                              // 다음 일반 렌더가 편집기 DOM을 세트뷰로 교체
   if(rerender!==false)renderTeamPanel();
