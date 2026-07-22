@@ -156,21 +156,29 @@ function detectMoveType(img,card,row){
   const a=Object.entries(cv).sort((x,y)=>y[1]-x[1]);
   return (a[0]&&a[0][1]>=12)?a[0][0]:null;
 }
-// 후보 = 학습 가능(LEARNSETS[species]) ∩ 타입. 타입 null이면 학습 가능 전체.
-function moveCandidates(species,type,DB,LEARNSETS){
+// 픽률(%) 하한 — 유저 지정: 타입 스캔 → 픽률 확인 → 매칭. 후보 대폭 축소로 렌더매칭 정확도↑.
+const MOVE_USAGE_MIN=5, ITEM_USAGE_MIN=3;
+// 후보 = 학습 가능(LEARNSETS[species]) ∩ 타입 ∩ (usage 픽률≥5%). 타입 null이면 학습 가능 전체.
+// usage(선택) = overlay가 채용률 API를 매핑한 [{key,pct}]. 픽률 필터 결과가 비면 base로 폴백(오프메타/데이터없음).
+function moveCandidates(species,type,DB,LEARNSETS,usage){
   const ls=(LEARNSETS&&LEARNSETS[species])||null;if(!ls)return [];
-  const out=[];for(const k of ls){const m=DB.moves&&DB.moves[k];if(!m)continue;
-    if(type&&m.t!==type)continue;out.push({key:k,ko:m.ko||k,type:m.t});}
-  return out;
+  const base=[];for(const k of ls){const m=DB.moves&&DB.moves[k];if(!m)continue;
+    if(type&&m.t!==type)continue;base.push({key:k,ko:m.ko||k,type:m.t});}
+  if(usage&&usage.length){
+    const ok=new Set(usage.filter(u=>u&&u.key&&(u.pct==null||u.pct>=MOVE_USAGE_MIN)).map(u=>u.key));
+    const f=base.filter(c=>ok.has(c.key));
+    if(f.length)return f;                            // 픽률 통과 후보 있으면 그것만
+  }
+  return base;
 }
-function detectMoves(img,card,species,DB,LEARNSETS,renderText){
+function detectMoves(img,card,species,DB,LEARNSETS,renderText,usage){
   const rows=moveRows(img,card);const CW=card.x1-card.x0;
   const nx0=card.x0+Math.round(CW*MNAMEX[0]),nx1=card.x0+Math.round(CW*MNAMEX[1]);
   return rows.map(row=>{
-    const type=detectMoveType(img,card,row);
-    const cands=moveCandidates(species,type,DB,LEARNSETS);
+    const type=detectMoveType(img,card,row);        // ①타입 스캔
+    const cands=moveCandidates(species,type,DB,LEARNSETS,usage); // ②픽률(5%)+타입 확인
     const g=extractText(img,nx0,nx1,row[0]-1,row[1]+2);
-    const best=g.w?matchByRender(g,cands,renderText):null;
+    const best=g.w?matchByRender(g,cands,renderText):null;       // ③매칭
     return best?{key:best.key,ko:best.ko,type:best.type||type,score:best.score}:{key:null,ko:null,type};
   });
 }
@@ -179,13 +187,15 @@ function detectMoves(img,card,species,DB,LEARNSETS,renderText){
 // 좌측 아이템 행(이름 아래 2번째, 아이콘+이름). 아이콘은 색이라 흰-텍스트 추출에 안 걸림 → 이름만 x0.125부터.
 // DB.items는 547개(한글 416) → 렌더-매칭엔 과다. narrowing 필수: overlay가 채용률 held_item으로 후보 제공.
 // 메가스톤(아쿠스타나이트 등)은 DB.items에 없음 → detectMegaStone/slot.mega로 별도 처리(여기선 null).
+// provided(선택) = [{key,ko?,pct?}] 또는 키/ko 문자열. pct 있으면 픽률≥3%만(유저 지정). 미제공 시 전체 한글.
 function itemCandidates(DB,provided){
-  const norm=c=>{if(typeof c==="string"){const v=DB.items&&DB.items[c];const ko=(typeof v==="string")?v:(v&&v.ko);return ko?{key:c,ko}:{key:c,ko:c};}
-    return c&&c.ko?c:null;};
-  if(provided&&provided.length)return provided.map(norm).filter(Boolean);
-  const out=[];for(const k in(DB.items||{})){const v=DB.items[k];const ko=(typeof v==="string")?v:(v&&v.ko);
-    if(ko&&/[가-힣]/.test(ko))out.push({key:k,ko});}
-  return out;   // 후보 미제공 시 전체 한글(과다 — overlay가 narrowing 권장)
+  const koOf=k=>{const v=DB.items&&DB.items[k];return (typeof v==="string")?v:(v&&v.ko);};
+  const norm=c=>{if(typeof c==="string"){const ko=koOf(c);return ko?{key:c,ko}:{key:c,ko:c};}
+    return (c&&c.ko)?c:null;};
+  if(provided&&provided.length)
+    return provided.filter(c=>!c||typeof c==="string"||c.pct==null||c.pct>=ITEM_USAGE_MIN).map(norm).filter(Boolean);
+  const out=[];for(const k in(DB.items||{})){const ko=koOf(k);if(ko&&/[가-힣]/.test(ko))out.push({key:k,ko});}
+  return out;   // 후보 미제공 시 전체 한글(과다 — overlay가 채용률 narrowing 권장)
 }
 // provided = 채용률 등으로 좁힌 아이템 후보([{key,ko}] 또는 키/ko 문자열). 없으면 전체(비추천).
 function detectItem(img,card,DB,renderText,provided){
