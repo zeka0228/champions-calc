@@ -7,9 +7,13 @@
 html,body{margin:0;padding:0;background:transparent;overflow:hidden;
   font-family:'Segoe UI','Malgun Gothic',sans-serif;font-size:13px;color:#e8edf2;
   -webkit-user-select:none;width:100vw;height:100vh}
-#hud{position:fixed;top:60px;left:16px;width:290px;max-height:85vh;overflow:hidden auto;
+#hud{position:fixed;top:60px;left:16px;width:auto;max-height:85vh;overflow:hidden auto;
   background:rgba(13,17,22,.86);border:1px solid #2e3947;border-radius:10px;padding:10px;
   backdrop-filter:blur(2px);display:none}
+#wrap{display:flex;gap:10px;align-items:flex-start}
+#content{width:290px;flex:none}
+#detail{width:288px;flex:none;display:none}
+#hud.detail #detail{display:block;border-left:1px solid #2e3947;padding-left:10px}
 #hud.on{display:block}
 #hud.hot{border-color:#4da3ff;box-shadow:0 0 0 1px #4da3ff} /* 커서가 HUD 위 = 조작(드래그) 가능 */
 #hud h3{font-size:12px;color:#93a1b0;margin:0 0 6px;letter-spacing:.05em}
@@ -60,6 +64,30 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
 .dvitem{font-size:12px;color:#e8edf2;margin-top:4px;padding-top:4px;border-top:1px solid #232c37}
 .small.ok{color:#7cf0a8}
 .small.dim{color:#5a6675;margin-top:6px}
+/* 팀 헤더 + 재인식 버튼 */
+.thead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.thead h3{margin:0}
+.ricon{background:#222a35;border:1px solid #2e3947;color:#8fb7e8;width:24px;height:24px;
+  border-radius:50%;cursor:pointer;font-size:14px;line-height:1;display:flex;align-items:center;
+  justify-content:center;padding:0;flex:none;transition:transform .25s,border-color .15s,color .15s}
+.ricon:hover{border-color:#4da3ff;color:#cfe4ff;transform:rotate(180deg)}
+.pinnote{color:#facc15;margin:2px 0 4px}
+/* 클릭 가능한 칩·팀행 */
+.tchip{cursor:pointer;transition:background .12s}
+.tchip:hover{background:#242d38}
+.tchip.sel{outline:1px solid #4da3ff;outline-offset:-1px;background:#20303f}
+.tnm{cursor:pointer}
+.tnm:hover{color:#cfe4ff}
+.trow.pin .tnm{color:#facc15;font-weight:700}
+/* 세트 상세 확장 패널(옆칸) */
+.tbtn.nav{padding:3px 9px}
+.dsec{display:flex;justify-content:space-between;gap:8px;border-top:1px solid #232c37;padding:4px 0;font-size:12px}
+.dseclab{color:#93a1b0}
+.dsecval{font-weight:600;text-align:right}
+.dsecval.dim{color:#5a6675;font-weight:400}
+.dvmoves{display:grid;gap:3px;margin:4px 0}
+.dmove{background:#1a2028;border-radius:5px;padding:3px 7px;font-size:11px}
+.dmove.dim{color:#5a6675}
 #toast{position:fixed;bottom:24px;left:16px;background:rgba(13,17,22,.86);border:1px solid #2e3947;
   border-radius:8px;padding:6px 12px;font-size:12px;color:#93a1b0;display:none}
 </style>
@@ -67,7 +95,10 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
 <body>
 <div id="hud">
   <div id="dragbar">⬤ 포챔스 오버레이 <span id="mode">대기</span><span class="small" id="conf"></span></div>
-  <div id="content"></div>
+  <div id="wrap">
+    <div id="content"></div>
+    <div id="detail"></div>
+  </div>
 </div>
 <div id="toast"></div>
 <video id="cap" style="display:none" autoplay muted></video>
