@@ -2,7 +2,11 @@
 const {app,BrowserWindow,ipcMain,desktopCapturer,globalShortcut,screen}=require("electron");
 const path=require("path");
 
+// [로컬 전용] 데이터셋 캡처는 gitignore된 electron/capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
+let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
+
 let overlayWin=null,controlWin=null;
+if(CAP)CAP.initMain(ipcMain,()=>controlWin); // save-capture 핸들러 등록(파일 있을 때만)
 
 // 주요 에뮬레이터 자동 감지 (창 제목) — 그 외는 목록에서 수동 선택
 const EMU_PATTERNS=[/bluestacks/i,/ldplayer/i,/nox/i,/mumu/i,/memu/i,/google play games/i,/녹스/,/미뮤/];

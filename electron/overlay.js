@@ -6,7 +6,16 @@ const DB=window.DB;
 const E=require("../engine.js"),A=require("../analyzer.js"),
       SC=require("../shared/screen-classifier.js"),SM=require("../matcher.js");
 const TR=require("../shared/team-register.js"); // 팀등록 화면 → 내 팀 6마리 인식
+const TD=require("../shared/team-detail.js");   // 팀등록 상세 → 세트(수치·성격·아이템·EV) 추출
 E.init(DB);
+
+// 세트 유틸 ── 화면 EV 짧은키(h/a/b/c/d/s) → engine.calcStats 긴키(hp/atk/…) 매핑 후 능력치 산출.
+// 검증: calcStats(lv50·IV31)가 팀등록 화면 실수치를 완전 재현(EV=calcStats pts). 메가면 메가폼 종족값으로 계산.
+const EV_LONG={h:"hp",a:"atk",b:"def",c:"spa",d:"spd",s:"spe"};
+function computeStats(species,nature,evs){const pts={};for(const k in(evs||{}))pts[EV_LONG[k]]=evs[k];
+  const c=DB.creatures[species];return c?E.calcStats(c,nature||"Serious",pts):null;}
+function megaFormeOf(species){const c=DB.creatures[species];if(!c||!c.formes)return null;
+  return c.formes.find(f=>/-Mega/.test(f)&&DB.creatures[f])||null;}
 
 // ===== 실시간 채용률 (live 우선, 6시간 캐시, 실패 시 내장 폴백) =====
 const liveUsage={};
@@ -44,6 +53,8 @@ A.init(DB,id=>liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||n
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
 const state={oppTeam:[],oppCur:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
+// [로컬 전용] 데이터셋 캡처는 gitignore된 capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
+let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
 let assetList=null;
 function ensureAssets(){
   if(assetList)return;
@@ -99,6 +110,7 @@ async function tick(force){
   $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
   $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
   if(a.lowRes)toast(`캡처가 작아 인식 정확도 저하 가능 (게임영역 ${a.rect.w}px) — 고해상도 캡처 권장`);
+  if(CAP)CAP.onScreen(a.screen); // [로컬] 데이터셋 캡처 화면상태 갱신
   if(a.screen==="matchmaking"){
     if(prev!=="matchmaking"){ // 새 매치 진입 1회 → 선출 잠금 자동 해제
       state.oppLocked=false;state.oppCur=null;state.oppTeam=[];
@@ -112,6 +124,17 @@ async function tick(force){
 }
 setInterval(()=>tick(false),1200);
 
+// 카드 1장 판정: 색 매칭만으론 46%가 혼동 위험 → 색 상위 후보군 중 "형태(gradient corr) 최고"를 채택.
+// 실측: 정답 corr 0.71~0.89 vs 혼동 후보 0.2~0.4로 확연히 갈림. matcher.js 원본 무수정, overlay 판정부만 개선.
+function decideCard(ranked){
+  if(!ranked||!ranked.length)return null;
+  const top=ranked.slice(0,6);                          // 색 상위 6후보로 압축
+  const best=[...top].sort((a,b)=>b.corr-a.corr)[0];    // 그 중 형태 corr 최고
+  if(best.corr>=0.45)return {id:best.id};               // 형태 일치 충분 → 채택(이로치 색변경도 형태로 잡힘)
+  if(ranked[0].score<4000)return {id:ranked[0].id};     // 형태 불명확하나 색이 압도적일 때
+  return null;                                           // 불확실 → 미채택(오인식보다 공백)
+}
+
 // ===== 선출 화면: 상대 6마리 매칭 → 역할 추정 =====
 // 프레임 독립: analyze()가 게임영역 기준으로 검출한 카드 지오메트리(절대 좌표)를
 // matcher.extractSprite 로 소비 (matcher.js 원본 무수정).
@@ -121,10 +144,10 @@ async function onSelect(f,a){
   try{
     ensureAssets();
     const cards=a.regions.cards;
+    let ids=[];
     if(cards){
       const img={data:f.img.data,width:f.img.width,height:f.img.height};
       const geo={xL:cards.xL,xR:cards.xR};
-      const ids=[];
       for(const band of cards.bands){
         const region=SM.extractSprite(img,geo,band);
         if(!region){ids.push(null);continue;}
@@ -132,8 +155,7 @@ async function onSelect(f,a){
         const types=TR.detectSelectTypes(img,geo,band); // 선출 카드 타입 → 후보 선필터(팀등록과 동일 방식)
         const cand=TR.candByTypes(types,id=>{const c=DB.creatures[id];return c&&c.types?c.types:[];},assetList);
         const ranked=SM.matchAll(region,edge,cand);
-        const byCorr=[...ranked].sort((x,y)=>y.corr-x.corr);
-        const d=SM.decide({best:ranked[0],bestCorr:byCorr[0]});
+        const d=decideCard(ranked);
         ids.push(d?d.id:null);
       }
       const good=ids.filter(Boolean);
@@ -145,6 +167,7 @@ async function onSelect(f,a){
         toast("선출 인식(고정): "+good.map(id=>DB.creatures[id].ko).join(", "));
       }
     }
+    if(CAP)CAP.select(ipcRenderer,f.cv,cards?ids:null,DB); // [로컬] 선출 프레임 데이터셋 캡처(진입당 1회)
   }catch(err){toast("선출 인식 오류: "+err.message);}
   state.busy=false;
 }
@@ -233,6 +256,7 @@ async function onBattle(f,a){
       const barH=R.oppIcon.barH||Math.round((R.oppIcon.y1-R.oppIcon.y0)/3);
       const r=identifyOppIcon(region,barH,state.oppTeam);
       if(r&&r.id!==state.oppCur){
+        if(CAP)CAP.battle(ipcRenderer,f.cv,r.id,r.score,DB); // [로컬] 배틀 프레임 캡처(식별 변경 시)
         state.oppCur=r.id;await fetchLive(baseOf(r.id));renderBattle();
         toast("상대: "+DB.creatures[r.id].ko);
       }
@@ -296,6 +320,7 @@ async function onTeamRegister(f,a){
     const sig=TR.signature(r.mons);
     teamStore.lastSig=sig;teamStore.lastMons=r.mons;teamStore.lastTypes=r.types;
     handleRecognizedTeam(sig,r.mons);
+    mergeTeamDetails(sig,r.mons,img,a.rect); // 세트(수치·성격·아이템) 탭별 누적 (능력탭·스탯탭 각각 채움)
   }catch(err){toast("팀 인식 오류: "+err.message);}
   state.busy=false;
 }
@@ -330,6 +355,10 @@ window.__team=(action,idx)=>{
   if(action==="reg")registerTeam(sig,mons);
   else if(action==="rej"){teamStore.rejectedSig=sig;teamStore.ui=null;renderTeamPanel(mons,sig);}
   else if(action==="del")deleteTeam(idx);
+  else if(action==="detail"){const t=activeTeam()||findTeam(teamStore.lastSig);if(t){teamStore.detailView={sig:t.sig,idx:0};renderDetailCarousel(t.sig,0);}}
+  else if(action==="dprev"&&teamStore.detailView)renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx-1);
+  else if(action==="dnext"&&teamStore.detailView)renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx+1);
+  else if(action==="dclose"){teamStore.detailView=null;renderTeamPanel(teamStore.lastMons,teamStore.lastSig);}
 };
 const TYPE_KO={Normal:"노말",Fire:"불꽃",Water:"물",Electric:"전기",Grass:"풀",Ice:"얼음",Fighting:"격투",Poison:"독",Ground:"땅",Flying:"비행",Psychic:"에스퍼",Bug:"벌레",Rock:"바위",Ghost:"고스트",Dragon:"드래곤",Dark:"악",Steel:"강철",Fairy:"페어리"};
 function monChips(mons){return mons.map((id,i)=>{const c=DB.creatures[id];
@@ -340,7 +369,11 @@ function monChips(mons){return mons.map((id,i)=>{const c=DB.creatures[id];
   `<span class="tchip"><span>?</span>${t}</span>`;}).join("");}
 function renderTeamPanel(mons,sig){
   const el=$("content");
+  if(teamStore.detailView)return renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx);
   let h=`<h3>내 팀 (${teamStore.teams.length}/${MAX_TEAMS})</h3><div class="tteam">${monChips(mons||[])}</div>`;
+  const _at=activeTeam();
+  if(_at&&_at.details&&_at.details.some(d=>d&&(d.nature||d.mega||d.evs)))
+    h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('detail')">더 보기 · 세트 상세 ▸</button></div>`;
   const ui=teamStore.ui;
   if(ui&&ui.sig===sig&&ui.mode==="confirm")
     h+=`<div class="tprompt">이 팀을 새로 등록할까요?</div><div class="tbtns"><button class="tbtn ok" onclick="__team('reg')">등록</button><button class="tbtn" onclick="__team('rej')">거절</button></div>`;
@@ -357,6 +390,82 @@ function renderTeamPanel(mons,sig){
   el.innerHTML=h;
 }
 
+// ===== 세트 상세 (수치·성격·아이템·EV) — 능력탭/스탯탭 탭별 판독 → 등록팀에 누적 =====
+// 스탯탭: 6수치+EV(숫자 템플릿)+성격(화살표). 능력탭: 아이템(메가스톤 여부). 종족 순서(인식순)를 팀 저장순에 정렬 병합.
+function readMonDetail(img,card,species,statTab){
+  if(!species||!card)return null;
+  if(statTab){const s=TD.readStatTab(img,card);if(!s.ok)return null;
+    return {tab:"stat",nature:TD.resolveNature(s.up,s.dn,DB.natures),evs:s.evs,stats:s.stats};}
+  const ms=TD.detectMegaStone(img,card),mega=megaFormeOf(species); // 메가스톤+종족 메가폼 있으면 메가 확정
+  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega};
+}
+function mergeTeamDetails(sig,mons,img,rect){
+  const team=findTeam(sig);if(!team)return;                       // 등록된 팀에만 세트 누적
+  let cells;try{cells=TR.detectCells(img,rect);}catch(e){cells=null;}
+  if(!cells||cells.length<6)return;
+  const statTab=TD.isStatTab(img,cells[0].card);                  // 탭 판별: 수치가 잡히면 스탯탭
+  team.details=team.details||team.mons.map(id=>({species:id}));
+  const used=new Array(team.mons.length).fill(false);let changed=false;
+  cells.forEach((cell,i)=>{
+    const sp=mons[i],d=readMonDetail(img,cell.card,sp,statTab);if(!d)return;
+    let j=team.mons.findIndex((m,k)=>m===sp&&!used[k]);if(j<0)j=team.mons.indexOf(sp);if(j<0)return;
+    used[j]=true;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
+    if(d.tab==="stat"){if(slot.nature!==d.nature||JSON.stringify(slot.evs)!==JSON.stringify(d.evs))changed=true;
+      slot.nature=d.nature;slot.evs=d.evs;slot.readStats=d.stats;}
+    else{if(slot.mega!==d.mega)changed=true;slot.mega=d.mega;slot.megaStone=d.megaStone;}
+    if(slot.mega)ensureMegaIcon(slot.mega);
+  });
+  if(!changed)return;                                            // 매 틱 재판독 시 스팸 방지
+  saveTeams();
+  if(teamStore.detailView&&teamStore.detailView.sig===sig)renderDetailCarousel(sig,teamStore.detailView.idx);
+  else toast("세트 인식: "+(statTab?"수치·성격":"아이템")+" 반영");
+}
+// 메가 아이콘 확보: SPRITE_INDEX엔 메가폼이 없음 → 스프라이트 webp를 40x40으로 렌더해 배틀 매칭 후보에 추가.
+const megaIconTried={};
+function ensureMegaIcon(forme){
+  if(!forme||megaIconTried[forme])return;ensureAssets();
+  if(assetList.some(a=>a.id===forme)){megaIconTried[forme]=true;return;}
+  const c=DB.creatures[forme];if(!c)return;megaIconTried[forme]=true;
+  const im=new Image();
+  im.onload=()=>{try{const cv=document.createElement("canvas");cv.width=40;cv.height=40;
+    const ctx=cv.getContext("2d",{willReadFrequently:true});ctx.drawImage(im,0,0,40,40);
+    const d=ctx.getImageData(0,0,40,40).data;
+    if(!assetList.some(a=>a.id===forme))assetList.push({id:forme,img:{data:new Uint8Array(d),width:40,height:40}});}catch(e){}};
+  im.src="../assets/sprites/"+c.sprite+".webp";
+}
+// 배틀 후보 id에 등록팀 메가폼 포함 (메가 진화 시 인식)
+function expandTeamIds(team){const ids=team.mons.slice();
+  if(team.details)for(const d of team.details)if(d&&d.mega&&!ids.includes(d.mega))ids.push(d.mega);
+  return ids;}
+// 세트 상세 캐러셀 — 포켓몬 1마리씩 ◀▶. 메가면 메가폼 스프라이트·능력치(메가 기준)로 표시.
+function renderDetailCarousel(sig,idx){
+  const team=findTeam(sig),el=$("content");
+  if(!team){teamStore.detailView=null;return renderTeamPanel(teamStore.lastMons,teamStore.lastSig);}
+  const n=team.mons.length;idx=((idx%n)+n)%n;teamStore.detailView={sig,idx};
+  const baseId=team.mons[idx],d=(team.details&&team.details[idx])||{};
+  const showId=d.mega||baseId,c=DB.creatures[showId]||DB.creatures[baseId];
+  const natKo=d.nature?(DB.natures[d.nature]?DB.natures[d.nature].ko:d.nature):"—";
+  const st=(d.nature||d.evs)?computeStats(showId,d.nature,d.evs):null;
+  const ty=((c&&c.types)||[]).map(t=>TYPE_KO[t]||t).join("·");
+  let h=`<div class="dv"><div class="dvhead"><button class="tbtn" onclick="__team('dprev')">◀</button>`+
+    `<span class="dvpos">${idx+1} / ${n}</span><button class="tbtn" onclick="__team('dnext')">▶</button>`+
+    `<button class="tbtn del" onclick="__team('dclose')">닫기</button></div>`;
+  h+=`<div class="dvmon"><img src="../assets/sprites/${c?c.sprite:""}.webp" onerror="this.style.visibility='hidden'">`+
+    `<div><span class="nm">${c?c.ko:baseId}</span>${d.mega?' <span class="megab">MEGA</span>':""}`+
+    `<div class="small">${ty||"-"}</div><div class="small">성격 ${natKo}</div></div></div>`;
+  if(st){h+=`<div class="dvstats">`;
+    for(const[k,lk,lab]of[["h","hp","HP"],["a","atk","공격"],["b","def","방어"],["c","spa","특공"],["d","spd","특방"],["s","spe","스피드"]]){
+      const ev=(d.evs&&d.evs[k])||0;
+      h+=`<div class="dvst"><span class="dvlab">${lab}</span><span class="dvnum">${st[lk]}</span><span class="dvev">${ev?"노력 "+ev:""}</span></div>`;}
+    h+=`</div>`;
+    if(d.mega)h+=`<div class="small ok">↑ 메가진화 기준 능력치 (비교에 사용)</div>`;
+  }else h+=`<div class="small">스테이터스 탭을 띄우면 수치·성격이 채워집니다</div>`;
+  if(d.mega)h+=`<div class="dvitem">아이템 · 메가스톤 → ${DB.creatures[d.mega]?DB.creatures[d.mega].ko:d.mega} 진화</div>`;
+  else if(d.megaStone)h+=`<div class="dvitem">아이템 · 메가스톤</div>`;
+  h+=`<div class="small dim">특성 · 기술은 다음 단계(텍스트 인식)에서 표시됩니다</div></div>`;
+  el.innerHTML=h;
+}
+
 // 배틀: 등록된 활성 팀 6마리 중 내 활성 포켓몬을 이름바 아이콘으로 자동 식별(상대 식별과 동일 경로).
 // 신뢰 임계(identifyOppIcon의 ABS_THR/MARGIN) 통과 시에만 수동 선택을 대체 → 불확실하면 수동 유지(오표시 방지).
 // 내 이름바 오프셋은 실측 1프레임 기준 잠정값 → 실배틀 프레임으로 튜닝 필요(상대 아이콘과 동일 절차).
@@ -364,7 +473,7 @@ function identifyMyMon(f,R){
   const team=activeTeam();if(!team)return;
   const region=cropRegionImg(f,R.myIcon);
   const barH=R.myIcon.barH||Math.round((R.myIcon.y1-R.myIcon.y0)/3);
-  const r=identifyOppIcon(region,barH,team.mons);
+  const r=identifyOppIcon(region,barH,expandTeamIds(team)); // 메가폼 포함(메가 진화 시 인식)
   if(r&&r.id!==state.myMon){state.myMon=r.id;fetchLive(baseOf(r.id)).then(()=>{if(state.lastScreen==="battle")renderBattle();});toast("내 포켓몬(자동): "+DB.creatures[r.id].ko);}
 }
 

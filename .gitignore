@@ -4,3 +4,6 @@ desktop.ini
 
 # overlay(Electron) 의존성 — package.json 추가로 생성됨
 node_modules/
+
+# 로컬 전용(레포 제외): 데이터셋 캡처 스위치·로직 등. 있으면 활성, 없으면 무동작.
+*.local.js
