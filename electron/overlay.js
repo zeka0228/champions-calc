@@ -720,6 +720,10 @@ function openEditor(){
   $("hud").classList.add("detail");$("detail").innerHTML=h;_detailHtml=null; // 편집기 직접 write → 다음 일반 렌더 강제 재작성
   ipcRenderer.send("overlay-focus",true);
   const i=$("editSearch");if(i){i.value=e.query||"";i.focus();}
+  if(e.field==="move"||e.field==="item"){                          // live 채용률 확보 → 도착 시 목록 재정렬
+    const sp=baseOf(baseId);
+    fetchLive(sp).then(()=>{if(teamStore.editing&&teamStore.editing.sig===e.sig&&teamStore.editing.field===e.field)renderEditList();});
+  }
   renderEditList();
 }
 function renderEditList(){
@@ -752,24 +756,32 @@ function abilityOptions(species,q){
     return {key,ko,label:`<b>${ko}</b>`};})
     .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(q.toLowerCase()));
 }
+// 채용률 조회 — live(API) 우선, 내장 폴백. usage.mv/it 이름은 DB.moves/DB.items 키와 동일(pct 0~100).
+function usageOf(id){id=baseOf(id);return liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null;}
+function usageRank(list){const rank={},pct={};if(list)list.forEach(([k,p],i)=>{if(rank[k]===undefined){rank[k]=i;pct[k]=p;}});return {rank,pct};}
 function moveOptions(species,q){
   const ls=(window.LEARNSETS&&window.LEARNSETS[species])||[],ql=q.toLowerCase();
-  return ls.map(key=>{const mv=DB.moves[key];if(!mv)return null;
-    return {key,ko:mv.ko,type:mv.t,label:`<span class="mvt" style="background:${TYPE_HEX[mv.t]||'#555'}">${TYPE_KO[mv.t]||mv.t}</span> <b>${mv.ko}</b> <span class="edsub">${mv.c==="Status"?"변화":mv.p}</span>`};})
+  const u=usageOf(species),{rank,pct}=usageRank(u&&u.mv);            // 채용률 순위·% (요구사항)
+  return ls.map(key=>{const mv=DB.moves[key];if(!mv)return null;const pc=pct[key];
+    return {key,ko:mv.ko,type:mv.t,rank:rank[key]!==undefined?rank[key]:9999,
+      label:`<span class="mvt" style="background:${TYPE_HEX[mv.t]||'#555'}">${TYPE_KO[mv.t]||mv.t}</span> <b>${mv.ko}</b> <span class="edsub">${pc!=null?"채용 "+Math.round(pc)+"%":(mv.c==="Status"?"변화":mv.p)}</span>`};})
     .filter(Boolean)
     .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(ql))
-    .sort((a,b)=>a.ko.localeCompare(b.ko,"ko"));
+    .sort((a,b)=>a.rank-b.rank||a.ko.localeCompare(b.ko,"ko"));       // 채용률 높은 순, 동순위는 가나다
 }
 function itemOptions(species,q){
   const c=DB.creatures[species];
   const myMegas=((c&&c.formes)||[]).filter(f=>DB.creatures[f]&&DB.creatures[f].form==="mega");
   const ql=q.toLowerCase();
+  const u=usageOf(species),{rank,pct}=usageRank(u&&u.it);            // 아이템 채용률 순위·%
   return Object.entries(DB.items).map(([key,v])=>{
-    if(v.mega&&!myMegas.includes(v.mega))return null;            // 다른 포켓몬 전용 메가스톤 제외(요구사항)
-    return {key,ko:v.ko,mega:v.mega||null,label:`<b>${v.ko}</b>${v.mega?' <span class="edsub">메가스톤</span>':""}`};})
+    if(v.mega&&!myMegas.includes(v.mega))return null;                // 다른 포켓몬 전용 메가스톤 제외
+    const pc=pct[key],rk=rank[key];
+    return {key,ko:v.ko,mega:v.mega||null,rank:rk!==undefined?rk:9999,used:rk!==undefined,
+      label:`<b>${v.ko}</b>${pc!=null?` <span class="edsub">채용 ${Math.round(pc)}%</span>`:(v.mega?' <span class="edsub">메가스톤</span>':"")}`};})
     .filter(Boolean)
     .filter(o=>!q||o.ko.includes(q)||o.key.toLowerCase().includes(ql))
-    .sort((a,b)=>(a.mega?0:1)-(b.mega?0:1)||a.ko.localeCompare(b.ko,"ko")); // 내 메가스톤 먼저
+    .sort((a,b)=>a.rank-b.rank||(a.mega?0:1)-(b.mega?0:1)||a.ko.localeCompare(b.ko,"ko")); // 채용률 순 → 미채용은 메가스톤 먼저 → 가나다
 }
 function commitEdit(mut){const slot=editTeamSlot();if(!slot)return;const team=findTeam(teamStore.editing.sig);
   mut(slot);team.edited=true;team.lastRejectedScan=null;saveTeams();}
