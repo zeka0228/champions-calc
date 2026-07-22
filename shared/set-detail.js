@@ -58,12 +58,11 @@ function leftTextRows(img,card){
   if(s>=0&&CH-s>=MINH)bands.push([card.y0+s,card.y0+CH-1]);
   return bands;   // 절대 y. 기대: [이름, 특성, 아이템]. 카드박스 세로 드리프트로 위/아래 잡음 행 가능.
 }
-// 특성 행 = 이름 아래 첫 행. 이름은 폰트가 커서 "가장 높은 행"으로 앵커(드리프트 잡음 행 배제).
-function abilityRowBand(rows){
-  if(rows.length<2)return null;
-  let ni=0;for(let i=1;i<rows.length;i++)if((rows[i][1]-rows[i][0])>(rows[ni][1]-rows[ni][0]))ni=i;
-  return rows[ni+1]||null;   // 이름 바로 아래
-}
+// 이름 행 인덱스 = 폰트가 커서 "가장 높은 행"(드리프트 잡음 행 배제 앵커).
+function nameRowIdx(rows){let ni=0;for(let i=1;i<rows.length;i++)if((rows[i][1]-rows[i][0])>(rows[ni][1]-rows[ni][0]))ni=i;return ni;}
+// 특성 행 = 이름 바로 아래. 아이템 행 = 이름 아래 2번째(특성 다음).
+function abilityRowBand(rows){if(rows.length<2)return null;return rows[nameRowIdx(rows)+1]||null;}
+function itemRowBand(rows){if(rows.length<3)return null;return rows[nameRowIdx(rows)+2]||null;}
 
 // ── 특성 ──────────────────────────────────────────────────────────────────
 // 후보 = 종족 ab(중복 제거). key→DB.abilities[key].ko.
@@ -162,6 +161,27 @@ function detectMoves(img,card,species,DB,LEARNSETS,renderText){
   });
 }
 
+// ── 아이템 ────────────────────────────────────────────────────────────────
+// 좌측 아이템 행(이름 아래 2번째, 아이콘+이름). 아이콘은 색이라 흰-텍스트 추출에 안 걸림 → 이름만 x0.125부터.
+// DB.items는 547개(한글 416) → 렌더-매칭엔 과다. narrowing 필수: overlay가 채용률 held_item으로 후보 제공.
+// 메가스톤(아쿠스타나이트 등)은 DB.items에 없음 → detectMegaStone/slot.mega로 별도 처리(여기선 null).
+function itemCandidates(DB,provided){
+  const norm=c=>{if(typeof c==="string"){const v=DB.items&&DB.items[c];const ko=(typeof v==="string")?v:(v&&v.ko);return ko?{key:c,ko}:{key:c,ko:c};}
+    return c&&c.ko?c:null;};
+  if(provided&&provided.length)return provided.map(norm).filter(Boolean);
+  const out=[];for(const k in(DB.items||{})){const v=DB.items[k];const ko=(typeof v==="string")?v:(v&&v.ko);
+    if(ko&&/[가-힣]/.test(ko))out.push({key:k,ko});}
+  return out;   // 후보 미제공 시 전체 한글(과다 — overlay가 narrowing 권장)
+}
+// provided = 채용률 등으로 좁힌 아이템 후보([{key,ko}] 또는 키/ko 문자열). 없으면 전체(비추천).
+function detectItem(img,card,DB,renderText,provided){
+  const rows=leftTextRows(img,card);const row=itemRowBand(rows);if(!row)return null;
+  const CW=card.x1-card.x0;
+  const g=extractText(img,card.x0+Math.round(CW*0.125),card.x0+Math.round(CW*0.47),row[0]-1,row[1]+2);
+  if(!g.w)return null;
+  return matchByRender(g,itemCandidates(DB,provided),renderText);
+}
+
 // ── renderText 콜백 팩토리(렌더러 전용, 캔버스) ─────────────────────────────
 // overlay.js: const renderText=SetDetail.makeCanvasRenderer(); SetDetail.detectAbility(...,renderText).
 // 게임과 비슷한 볼드 산세리프로 흰 글자를 검은 배경에 그려 raw 이진 마스크 반환. 폰트/굵기는 실앱 튜닝 여지.
@@ -179,6 +199,6 @@ function makeCanvasRenderer(font){
   };
 }
 
-return {NW,NH,rasterize,similarity,extractText,leftTextRows,abilityRowBand,abilityCandidates,matchByRender,detectAbility,
-        moveRows,detectMoveType,moveCandidates,detectMoves,makeCanvasRenderer};
+return {NW,NH,rasterize,similarity,extractText,leftTextRows,abilityRowBand,itemRowBand,abilityCandidates,matchByRender,detectAbility,
+        moveRows,detectMoveType,moveCandidates,detectMoves,itemCandidates,detectItem,makeCanvasRenderer};
 });
