@@ -313,20 +313,60 @@ function teamName(mons){const g=mons.filter(Boolean);return g.map(id=>DB.creatur
 function findTeam(sig){return teamStore.teams.find(t=>t.sig===sig)||null;}
 function activeTeam(){return teamStore.teams.find(t=>t.sig===teamStore.activeSig)||null;}
 
+// 유효 인식 판별: 6마리 서로 다른 종족(팀에 중복 불가 → 중복=오인식) + 타입 대부분 잡힘.
+// 오인식은 같은 종족 반복(예: 미끄래곤×3)·타입 0으로 명확히 갈림 → 재시도 트리거 기준.
+function goodRecog(r){
+  if(!r||!r.ok||!r.mons)return false;
+  const got=r.mons.filter(Boolean);
+  if(new Set(got).size!==6)return false;                 // 중복 종족 = 오인식
+  const typed=(r.types||[]).filter(t=>t&&t.length).length;
+  return typed>=5;                                        // 타입 6칸 중 5+ 잡힘
+}
+// 게임영역(rect)을 목표 폭 W로 최근접 리샘플 → {img,rect}. 창 크기 변경과 동일한 픽셀 정렬 변화 효과.
+function resampleRegion(img,rect,W){
+  const H=Math.round(rect.h*W/rect.w),out=new Uint8Array(W*H*4);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const sx=rect.x0+Math.min(rect.w-1,(x*rect.w/W)|0),sy=rect.y0+Math.min(rect.h-1,(y*rect.h/H)|0);
+    const si=(sy*img.width+sx)*4,di=(y*W+x)*4;out[di]=img.data[si];out[di+1]=img.data[si+1];out[di+2]=img.data[si+2];out[di+3]=255;}
+  return {img:{data:out,width:W,height:H},rect:{x0:0,y0:0,w:W,h:H}};
+}
+// 견고 인식: 원본 시도 → 실패(중복/타입)면 여러 스케일로 리샘플 재시도 → 유효결과 다수결.
+// 유저 관찰(창 늘렸다 줄이면 인식됨)을 자동화. 실측: 실패 프레임이 6/8 스케일서 정답 복구·수렴.
+const RETRY_SCALES=[0.86,1.12,1.30,1.48,0.72,1.62];
+function recognizeRobust(img,rect){
+  const base=TR.recognize(img,rect,SM,assetList,DB.creatures);
+  if(goodRecog(base))return {r:base,img,rect};
+  dlog("원본 인식 실패(중복/타입) → 멀티스케일 재시도");
+  const votes={};
+  for(const m of RETRY_SCALES){
+    const W=Math.round(rect.w*m);if(W<600||W>6000)continue;
+    let rs;try{rs=resampleRegion(img,rect,W);}catch(e){continue;}
+    const r=TR.recognize(rs.img,rs.rect,SM,assetList,DB.creatures);
+    if(goodRecog(r)){const s=TR.signature(r.mons);const v=votes[s]||(votes[s]={n:0});v.n++;
+      if(!v.r){v.r=r;v.img=rs.img;v.rect=rs.rect;}
+      if(v.n>=2)break;}                                    // 2표 합의 → 조기 종료(비용 절감)
+  }
+  const best=Object.values(votes).sort((a,b)=>b.n-a.n)[0];
+  if(best){dlog(`재시도 복구(다수결 ${best.n}표): ${teamName(best.r.mons)}`,"ok");return {r:best.r,img:best.img,rect:best.rect};}
+  dlog("재시도해도 유효 인식 없음 → 대기","err");
+  return {r:base,img,rect};
+}
+
 async function onTeamRegister(f,a){
   if(state.busy)return;state.busy=true;
   try{
     ensureAssets();
     $("mode").textContent="팀등록";$("conf").textContent="";
-    const img={data:f.img.data,width:f.img.width,height:f.img.height};
-    const r=TR.recognize(img,a.rect,SM,assetList,DB.creatures); // 타입 먼저 추론 → 후보 필터 → 아이콘 매칭
+    const baseImg={data:f.img.data,width:f.img.width,height:f.img.height};
+    const res=recognizeRobust(baseImg,a.rect);            // 원본→실패시 멀티스케일 재시도→다수결
+    const r=res.r,img=res.img,rect=res.rect;              // 채택된(복구된) 프레임 좌표계로 이후 처리
     const _cnt=r&&r.mons?r.mons.filter(Boolean).length:0;
     const _tab=(r&&r.cells&&r.cells.length)?(TD.isStatTab(img,r.cells[0].card)?"스탯":"능력"):"?";
-    dlog(`팀등록 인식: 잡힌수=${_cnt}/6 ok=${!!(r&&r.ok)} 탭=${_tab}${r&&r.upscaled?" (업스케일)":""}`, r&&r.ok?"ok":"err");
-    // [로컬] 팀등록 풀프레임 데이터셋 캡처 — 탭별 1회(능력/스탯). 5·6번 세트 미인식 진단용.
+    dlog(`팀등록 인식: 잡힌수=${_cnt}/6 유효=${goodRecog(r)} 탭=${_tab}`, goodRecog(r)?"ok":"err");
+    // [로컬] 팀등록 풀프레임 데이터셋 캡처 — 탭별 1회(능력/스탯). 원본 캔버스(f.cv) 저장.
     if(CAP&&r&&r.cells&&r.cells.length){try{const st=CAP.teamregister(ipcRenderer,f.cv,_tab==="스탯",r.mons,DB);if(st)dlog("스샷: "+st,"cap");}catch(e){dlog("스샷 오류: "+e.message,"err");}}
     else if(!CAP)dlog("스샷: capture.local.js 없음(캡처 비활성)","err");
-    if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
+    if(!goodRecog(r)){ // 유효 인식 실패(오인식 팀 등록 방지) → 대기
       if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
         ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
         : '<div class="small">팀 화면 인식 중… 6마리가 모두 보이게 두세요</div>';
@@ -334,9 +374,9 @@ async function onTeamRegister(f,a){
     }
     const sig=TR.signature(r.mons);
     teamStore.lastSig=sig;teamStore.lastMons=r.mons;teamStore.lastTypes=r.types;
-    teamStore.lastFrame={img,rect:a.rect,mons:r.mons,sig}; // 등록 직후(정지화면 틱 스킵) 즉시 세트 채우기용
+    teamStore.lastFrame={img,rect,mons:r.mons,sig};       // 채택 프레임 — 등록 즉시 세트 채우기용
     handleRecognizedTeam(sig,r.mons);
-    mergeTeamDetails(sig,r.mons,img,a.rect); // 세트(수치·성격·아이템) 탭별 누적 (능력탭·스탯탭 각각 채움)
+    mergeTeamDetails(sig,r.mons,img,rect); // 세트(수치·성격·아이템) 탭별 누적 (능력탭·스탯탭 각각 채움)
   }catch(err){toast("팀 인식 오류: "+err.message);}
   state.busy=false;
 }
