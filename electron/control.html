@@ -17,6 +17,8 @@ input,select{background:#222a35;border:1px solid #2e3947;color:#e8edf2;padding:5
 .hint{color:#93a1b0;font-size:12px;line-height:1.6}
 kbd{background:#222a35;border:1px solid #2e3947;border-radius:4px;padding:1px 5px;font-size:11px}
 #status{margin-top:10px;color:#4da3ff;min-height:18px}
+#log{margin-top:8px;background:#0a0d10;border:1px solid #2e3947;border-radius:6px;padding:6px 8px;height:220px;overflow-y:auto;font-family:Consolas,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap}
+#log .l{color:#c8d2dc}#log .l.cap{color:#ffd479}#log .l.err{color:#ff8a8a}#log .l.ok{color:#4ade80}
 </style>
 </head>
 <body>
@@ -41,6 +43,10 @@ kbd{background:#222a35;border:1px solid #2e3947;border-radius:4px;padding:1px 5p
 HUD 위로 마우스를 올리면 자동으로 드래그·조작 가능, <b>그 외 화면은 게임 클릭이 그대로 통과</b>됩니다.
 </div>
 <div id="status"></div>
+
+<h2>진단 로그 <button class="btn" id="clearLog" style="font-size:11px;padding:3px 8px">지우기</button></h2>
+<div class="hint">팀 인식·스샷·세트 반영 흐름을 순서대로 기록합니다.</div>
+<div id="log"></div>
 
 <script src="../data.js"></script>
 <script>
@@ -80,6 +86,17 @@ $("mySearch").addEventListener("input",e=>{
 });
 $("reRecognize").onclick=()=>{ipcRenderer.send("to-overlay","force-recognize");$("status").textContent="상대 재인식 요청 — 선출 잠금 해제";};
 ipcRenderer.on("overlay-status",(e,t)=>{$("status").textContent=t;});
+
+// 진단 로그: overlay가 to-control "diag"로 보낸 라인을 시각별로 누적(최근 200줄)
+$("clearLog").onclick=()=>{$("log").innerHTML="";};
+ipcRenderer.on("diag",(e,p)=>{
+  const line=(p&&p.line)||String(p),kind=p&&p.kind;
+  const log=$("log");const now=new Date();
+  const ts=`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}:${String(now.getSeconds()).padStart(2,"0")}`;
+  const d=document.createElement("div");d.className="l"+(kind?" "+kind:"");d.textContent=`[${ts}] ${line}`;
+  log.appendChild(d);while(log.childNodes.length>200)log.removeChild(log.firstChild);
+  log.scrollTop=log.scrollHeight;
+});
 </script>
 </body>
 </html>

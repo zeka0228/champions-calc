@@ -68,6 +68,8 @@ function ensureAssets(){
 const toast=t=>{const e=$("toast");e.textContent=t;e.style.display="block";
   clearTimeout(toast._t);toast._t=setTimeout(()=>e.style.display="none",4000);
   ipcRenderer.send("to-control","overlay-status",t);};
+// 진단 로그: control 창 "진단 로그" 패널에 시각순 누적(+ DevTools 콘솔). kind: ""|cap|ok|err
+const dlog=(msg,kind)=>{try{console.log("[진단] "+msg);ipcRenderer.send("to-control","diag",{line:msg,kind});}catch(e){}};
 
 // ===== 캡처 =====
 let video=$("cap"),capReady=false;
@@ -103,8 +105,15 @@ async function tick(force){
   if(state.busy||!capReady)return;
   const f=grabFrame();if(!f)return;
   const h=SC.frameHash(f.img);
-  if(!force&&state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01)return; // 정지 화면 스킵
-  state.lastHash=h;
+  const staticFrame=state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01;
+  if(!force&&staticFrame){
+    // 정지 화면 스킵 — 단, 팀등록은 진입 애니메이션 프레임서 인식 실패 후 "안정된 정지 프레임"을 놓치므로
+    // 프레임 변화 이후 몇 틱은 정지여도 재시도(유저가 전체화면 토글해야 인식되던 문제).
+    if(state.lastScreen==="teamregister"&&state.trRetry>0)state.trRetry--;
+    else return;
+  }else if(!staticFrame){
+    state.lastHash=h;state.trRetry=5;   // 프레임 변할 때마다 팀등록 재시도 카운트 리셋(전환 후 정지 프레임 확보)
+  }
   const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
   const prev=state.lastScreen;state.lastScreen=a.screen;
   $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
@@ -311,8 +320,12 @@ async function onTeamRegister(f,a){
     $("mode").textContent="팀등록";$("conf").textContent="";
     const img={data:f.img.data,width:f.img.width,height:f.img.height};
     const r=TR.recognize(img,a.rect,SM,assetList,DB.creatures); // 타입 먼저 추론 → 후보 필터 → 아이콘 매칭
+    const _cnt=r&&r.mons?r.mons.filter(Boolean).length:0;
+    const _tab=(r&&r.cells&&r.cells.length)?(TD.isStatTab(img,r.cells[0].card)?"스탯":"능력"):"?";
+    dlog(`팀등록 인식: 잡힌수=${_cnt}/6 ok=${!!(r&&r.ok)} 탭=${_tab}${r&&r.upscaled?" (업스케일)":""}`, r&&r.ok?"ok":"err");
     // [로컬] 팀등록 풀프레임 데이터셋 캡처 — 탭별 1회(능력/스탯). 5·6번 세트 미인식 진단용.
-    if(CAP&&r&&r.cells&&r.cells.length){try{CAP.teamregister(ipcRenderer,f.cv,TD.isStatTab(img,r.cells[0].card),r.mons,DB);}catch(e){}}
+    if(CAP&&r&&r.cells&&r.cells.length){try{const st=CAP.teamregister(ipcRenderer,f.cv,_tab==="스탯",r.mons,DB);if(st)dlog("스샷: "+st,"cap");}catch(e){dlog("스샷 오류: "+e.message,"err");}}
+    else if(!CAP)dlog("스샷: capture.local.js 없음(캡처 비활성)","err");
     if(!r||!r.ok){ // 6마리가 다 안 잡히면 대기(진행 중 UI는 유지)
       if(!teamStore.ui&&!teamStore.lastSig)$("content").innerHTML=(r&&r.upscaled)
         ? '<div class="small">캡처 해상도가 낮아 인식이 어려워요. 에뮬레이터 창을 키우거나 해상도를 높이면 정확해집니다.</div>'
@@ -321,6 +334,7 @@ async function onTeamRegister(f,a){
     }
     const sig=TR.signature(r.mons);
     teamStore.lastSig=sig;teamStore.lastMons=r.mons;teamStore.lastTypes=r.types;
+    teamStore.lastFrame={img,rect:a.rect,mons:r.mons,sig}; // 등록 직후(정지화면 틱 스킵) 즉시 세트 채우기용
     handleRecognizedTeam(sig,r.mons);
     mergeTeamDetails(sig,r.mons,img,a.rect); // 세트(수치·성격·아이템) 탭별 누적 (능력탭·스탯탭 각각 채움)
   }catch(err){toast("팀 인식 오류: "+err.message);}
@@ -329,11 +343,12 @@ async function onTeamRegister(f,a){
 function handleRecognizedTeam(sig,mons){
   const existing=findTeam(sig);
   if(existing){ // 이미 등록된 팀 → 활성화
-    if(teamStore.activeSig!==sig){teamStore.activeSig=sig;toast("활성 팀: "+existing.name);}
+    if(teamStore.activeSig!==sig){teamStore.activeSig=sig;toast("활성 팀: "+existing.name);dlog("등록된 팀 활성화: "+existing.name,"ok");}
     teamStore.ui=null;return renderTeamPanel(mons,sig);
   }
   if(sig===teamStore.rejectedSig){teamStore.ui=null;return renderTeamPanel(mons,sig);} // 거절한 팀 → 다른 팀까지 대기
   teamStore.ui=teamStore.teams.length<MAX_TEAMS?{mode:"confirm",sig,mons}:{mode:"full",sig,mons};
+  dlog("새 팀 인식 → "+(teamStore.teams.length<MAX_TEAMS?"등록 프롬프트":"슬롯가득")+": "+teamName(mons));
   renderTeamPanel(mons,sig);
 }
 function registerTeam(sig,mons){
@@ -341,7 +356,11 @@ function registerTeam(sig,mons){
   teamStore.teams.push({sig,mons,name:teamName(mons)});
   if(teamStore.teams.length>MAX_TEAMS)teamStore.teams=teamStore.teams.slice(-MAX_TEAMS);
   teamStore.activeSig=sig;teamStore.rejectedSig=null;teamStore.ui=null;saveTeams();
-  toast("팀 등록: "+teamName(mons));renderTeamPanel(mons,sig);
+  toast("팀 등록: "+teamName(mons));
+  const lf=teamStore.lastFrame;                              // 등록 즉시 세트 채움(다음 인식 틱 안 기다림)
+  dlog("팀 등록: "+teamName(mons)+(lf&&lf.sig===sig?" → 저장프레임으로 세트 채움":" (저장프레임 불일치 → 다음 인식틱 대기)"),"ok");
+  if(lf&&lf.sig===sig){try{mergeTeamDetails(sig,lf.mons,lf.img,lf.rect);}catch(e){dlog("세트채움 오류: "+e.message,"err");}}
+  renderTeamPanel(mons,sig);
 }
 function deleteTeam(idx){
   const t=teamStore.teams[idx];if(!t)return;
@@ -357,7 +376,7 @@ window.__team=(action,idx)=>{
   if(action==="reg")registerTeam(sig,mons);
   else if(action==="rej"){teamStore.rejectedSig=sig;teamStore.ui=null;renderTeamPanel(mons,sig);}
   else if(action==="del")deleteTeam(idx);
-  else if(action==="detail"){const t=activeTeam()||findTeam(teamStore.lastSig);if(t){teamStore.detailView={sig:t.sig,idx:0};renderDetailCarousel(t.sig,0);}}
+  else if(action==="detail"){const t=findTeam(teamStore.lastSig)||activeTeam();if(t){teamStore.detailView={sig:t.sig,idx:0};renderDetailCarousel(t.sig,0);}}
   else if(action==="dprev"&&teamStore.detailView)renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx-1);
   else if(action==="dnext"&&teamStore.detailView)renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx+1);
   else if(action==="dclose"){teamStore.detailView=null;renderTeamPanel(teamStore.lastMons,teamStore.lastSig);}
@@ -371,10 +390,16 @@ function monChips(mons){return mons.map((id,i)=>{const c=DB.creatures[id];
   `<span class="tchip"><span>?</span>${t}</span>`;}).join("");}
 function renderTeamPanel(mons,sig){
   const el=$("content");
-  if(teamStore.detailView)return renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx);
+  if(teamStore.detailView){                              // 상세는 "그 팀을 보고 있을 때만" 유지
+    if(teamStore.detailView.sig===sig)return renderDetailCarousel(teamStore.detailView.sig,teamStore.detailView.idx);
+    teamStore.detailView=null;                            // 다른 팀으로 넘어가면 상세 닫힘(원래 팀 상세가 눌러붙던 꼬임)
+  }
   let h=`<h3>내 팀 (${teamStore.teams.length}/${MAX_TEAMS})</h3><div class="tteam">${monChips(mons||[])}</div>`;
-  const _at=activeTeam();
-  if(_at&&_at.details&&_at.details.some(d=>d&&(d.nature||d.mega||d.evs)))
+  const _shown=findTeam(sig);   // "더 보기"는 지금 보고 있는 팀(sig) 기준 — 활성팀 기준이면 다른 팀 화면에 원래 팀 버튼이 뜸
+  const _has=!!(_shown&&_shown.details&&_shown.details.some(d=>d&&(d.nature||d.mega||d.evs)));
+  const _k=(_shown?teamName(_shown.mons):"미등록")+":"+_has;
+  if(renderTeamPanel._k!==_k){renderTeamPanel._k=_k;dlog(`패널: ${_shown?teamName(_shown.mons):"미등록 팀"} · 더보기=${_has?"O":"X"}`);}
+  if(_has)
     h+=`<div class="tbtns"><button class="tbtn ok" onclick="__team('detail')">더 보기 · 세트 상세 ▸</button></div>`;
   const ui=teamStore.ui;
   if(ui&&ui.sig===sig&&ui.mode==="confirm")
@@ -402,25 +427,27 @@ function readMonDetail(img,card,species,statTab){
   return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega};
 }
 function mergeTeamDetails(sig,mons,img,rect){
-  const team=findTeam(sig);if(!team)return;                       // 등록된 팀에만 세트 누적
+  const team=findTeam(sig);if(!team){dlog("세트병합: 미등록 팀 → 스킵");return;} // 등록된 팀에만 세트 누적
   let cells;try{cells=TR.detectCells(img,rect);}catch(e){cells=null;}
-  if(!cells||cells.length<6)return;
+  if(!cells||cells.length<6){dlog("세트병합: detectCells 실패(카드 못 잡음)","err");return;}
   const statTab=TD.isStatTab(img,cells[0].card);                  // 탭 판별: 수치가 잡히면 스탯탭
   team.details=team.details||team.mons.map(id=>({species:id}));
-  const used=new Array(team.mons.length).fill(false);let changed=false;
+  const used=new Array(team.mons.length).fill(false);let changed=false,filled=0;
   cells.forEach((cell,i)=>{
     const sp=mons[i],d=readMonDetail(img,cell.card,sp,statTab);if(!d)return;
     let j=team.mons.findIndex((m,k)=>m===sp&&!used[k]);if(j<0)j=team.mons.indexOf(sp);if(j<0)return;
-    used[j]=true;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
+    used[j]=true;filled++;const slot=team.details[j]||(team.details[j]={species:sp});slot.species=sp;
     if(d.tab==="stat"){if(slot.nature!==d.nature||JSON.stringify(slot.evs)!==JSON.stringify(d.evs))changed=true;
       slot.nature=d.nature;slot.evs=d.evs;slot.readStats=d.stats;}
     else{if(slot.mega!==d.mega)changed=true;slot.mega=d.mega;slot.megaStone=d.megaStone;}
     if(slot.mega)ensureMegaIcon(slot.mega);
   });
+  dlog(`세트병합: 탭=${statTab?"스탯":"능력"} 채운칸=${filled}/6 변화=${changed?"O":"X"}`, filled>=5?"ok":"err");
   if(!changed)return;                                            // 매 틱 재판독 시 스팸 방지
   saveTeams();
   if(teamStore.detailView&&teamStore.detailView.sig===sig)renderDetailCarousel(sig,teamStore.detailView.idx);
-  else toast("세트 인식: "+(statTab?"수치·성격":"아이템")+" 반영");
+  else{toast("세트 인식: "+(statTab?"수치·성격":"아이템")+" 반영");
+    if(teamStore.lastSig===sig&&!teamStore.ui)renderTeamPanel(teamStore.lastMons||mons,sig);} // 세트 채운 뒤 패널 즉시 갱신(버튼 노출)
 }
 // 메가 아이콘 확보: SPRITE_INDEX엔 메가폼이 없음 → 스프라이트 webp를 40x40으로 렌더해 배틀 매칭 후보에 추가.
 const megaIconTried={};
