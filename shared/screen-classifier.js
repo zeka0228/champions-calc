@@ -205,16 +205,14 @@ function detectRegions(img,screen,rect){
       const bw=my.x1-my.x0,bh=my.y1-my.y0;
       out.myName={x0:my.x0+Math.floor(bw*0.02),y0:my.y0+Math.floor(bh*0.10),
                   x1:my.x1-Math.floor(bw*0.30),y1:my.y1-Math.floor(bh*0.10),src:"anchor"};
-      // 내 이름바 2D 도감 아이콘 → 등록된 내 팀 6마리와 매칭해 활성 내 포켓몬 자동 인식.
-      // 내 이름바는 상대(top-right)와 레이아웃이 달라 오프셋 별도: 실측(2559x1439) 결과 아이콘은
-      // 바 좌하단, 바 좌단 기준 x[+0.3bh,+1.5bh]·y[+0.15bh,바하단]. (barH 상수시간 매칭 정규화용)
-      out.myIcon={
-        x0:Math.max(rect.x0,Math.round(my.x0+bh*0.30)),
-        y0:Math.max(rect.y0,Math.round(my.y0+bh*0.15)),
-        x1:Math.min(rect.x0+rect.w,Math.round(my.x0+bh*1.55)),
-        y1:Math.min(rect.y0+rect.h,Math.round(my.y1+bh*0.10)),
-        barH:bh,src:"anchor"};
     }
+    // 내 이름바 2D 도감 아이콘 → 등록된 내 팀과 매칭해 "지금 출전한 내 포켓몬" 자동 인식.
+    // ⚠ 라임 앵커에 매달지 않는다: 실배틀 91프레임 확인 결과 바 테두리 색이 프레임마다
+    //   라임(177,228,77) ↔ 연보라(177,175,220) ↔ 어두운 라임(132,152,44)으로 바뀌어(턴 하이라이트)
+    //   limeBarBottomLeft가 HP바 초록을 바로 오인하거나 아예 실패했다(아이콘 잘림 → 매칭 실패).
+    // UI가 게임영역에 고정 앵커라 비율이 매우 안정적(실측 2560x1392·1954x1114 두 종횡비 모두 포함).
+    // 매칭은 슬라이딩(멀티스케일)이라 넉넉한 박스면 충분 → 아래 비율 상자로 고정.
+    out.myIcon=cropToBox(CROPS.myIcon,rect);
   }
   return out;
 }
@@ -266,6 +264,8 @@ function hashDiff(a,b){
 const CROPS={
   oppName:{x:0.790,y:0.026,w:0.158,h:0.060},
   myName:{x:0.056,y:0.846,w:0.168,h:0.052},
+  // 내 이름바 아이콘(도감 2D) 탐색 상자 — 실배틀 91프레임 검증(2560x1392·1954x1114 모두 아이콘 전체 포함)
+  myIcon:{x:0.012,y:0.842,w:0.090,h:0.128},
 };
 
 return {analyze,classify,detectGameRect,detectRegions,detectSelectCards,frameHash,hashDiff,CROPS,

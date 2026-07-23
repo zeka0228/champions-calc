@@ -3,10 +3,11 @@
 //   baseOf, megaFormesOf, ensureAssets/assetList, ensureMegaIcon, fetchLive, CAP, registerScreen.
 // overlay-team.js(1번 클로드 담당)가 제공하는 것: activeTeam(), expandTeamIds(team)  ← identifyMyMon에서만 사용.
 // 이 파일은 #content 만 그림(#detail 옆칸은 팀 트랙 전용).
+const BM=require("../shared/battle-mymon.js"); // 배틀 이름바 → 지금 출전한 내 포켓몬 식별
 
 // 설정 창에서 내 포켓몬 수동 선택
 ipcRenderer.on("my-mon",(e,{id})=>{
-  state.myMon=id;fetchLive(id).then(()=>{if(state.lastScreen==="battle")renderBattle();});
+  state.myMon=id;state.myForme=null;fetchLive(id).then(()=>{if(state.lastScreen==="battle")renderBattle();});
   toast("내 포켓몬: "+DB.creatures[id].ko);
 });
 
@@ -171,11 +172,14 @@ function renderBattle(){
   let curMega=null;                                       // 표시/계산 메가폼: 유저선택 > 필드확인 > 픽률기본
   if(megas.length)curMega=(state.oppMegaSel&&megas.includes(state.oppMegaSel))?state.oppMegaSel:(onField||defMega||null);
   const oppKo=curMega?(DB.creatures[curMega]&&DB.creatures[curMega].ko||DB.creatures[opp].ko):(DB.creatures[opp]?DB.creatures[opp].ko:state.oppCur);
-  const myTop=A.topSet(my);
+  // 내 쪽도 필드에서 메가진화가 확인되면(myForme) 그 종족값·타입 기준으로 계산.
+  const myForme=(state.myForme&&DB.creatures[state.myForme])?state.myForme:null;
+  const myTop=A.topSet(my,myForme);
   const myStats=E.calcStats(DB.creatures[myTop.cfg.forme||my],myTop.cfg.nature,myTop.cfg.pts);
   const fsRes=A.firstStrike(myStats.spe,opp,{forme:curMega});
   const lbl={neu:"무보정",semi:"준속",mx:"최속",scarf:"스카프",est:"픽률1위"};
-  let html=`<h3>${DB.creatures[my].ko} vs ${oppKo}${curMega?' <span class="megab">MEGA</span>':""}</h3>`;
+  const myKo=(myForme?DB.creatures[myForme].ko:DB.creatures[my].ko)+(myForme?' <span class="megab">MEGA</span>':"");
+  let html=`<h3>${myKo} vs ${oppKo}${curMega?' <span class="megab">MEGA</span>':""}</h3>`;
   if(megas.length>=2){                                    // 복수 메가(리자몽·라이츄 X/Y) → 즉시 전환 비교 토글
     html+=`<div class="megasel">`;
     for(const m of megas){const mk=DB.creatures[m]?DB.creatures[m].ko:m;
@@ -203,16 +207,37 @@ function renderBattle(){
 // 복수 메가(X/Y) 선택 → 그 메가 종족값·타입 기준으로 스피드·데미지 재계산(즉시 비교)
 window.__oppmega=(m)=>{state.oppMegaSel=m;renderBattle();};
 
-// 배틀: 등록된 활성 팀 6마리 중 내 활성 포켓몬을 이름바 아이콘으로 자동 식별(상대 식별과 동일 경로).
-// 신뢰 임계(identifyOppIcon의 ABS_THR/MARGIN) 통과 시에만 수동 선택을 대체 → 불확실하면 수동 유지(오표시 방지).
-// 내 이름바 오프셋은 실측 1프레임 기준 잠정값 → 실배틀 프레임으로 튜닝 필요(상대 아이콘과 동일 절차).
+// 배틀: "지금 출전한 내 포켓몬"을 좌하단 이름바 아이콘으로 자동 식별.
+// 상대 경로(identifyOppIcon)를 그대로 쓰던 이전 방식은 실배틀 프레임에서 사실상 동작하지 않았다:
+//   ① 상대 기준 스케일(barH*1.5~3.0)이 내 아이콘 실제 크기와 겹치지 않았고
+//   ② 이름바 앵커가 라임 테두리에 의존하는데 그 색이 프레임마다 바뀌어 아이콘이 잘렸다.
+// → 영역은 screen-classifier 의 검증된 비율 상자, 식별은 shared/battle-mymon.js(닫힌 집합 최선 채택).
+// 후보는 내 등록 팀 + 메가폼(실제 메가진화 시 아이콘이 메가로 바뀜) — 상대의 oppBattleIds 와 같은 방식.
 // activeTeam/expandTeamIds = overlay-team.js(1번 트랙) 제공 — 등록된 내 팀 정보.
+function myBattleIds(){
+  const team=activeTeam();if(!team)return [];
+  const ids=expandTeamIds(team);                                   // 6마리 + 스캔으로 확정된 메가폼
+  for(const id of team.mons||[])for(const m of megaFormesOf(baseOf(id)))
+    if(!ids.includes(m))ids.push(m);                               // 세트 미스캔이어도 메가 대응
+  for(const id of ids)if(/-Mega/.test(id))ensureMegaIcon(id);      // 메가 아이콘 사전확보(비동기)
+  return ids;
+}
+// 단발 오인식 차단: 같은 결과가 2틱 연속일 때만 교체(오프라인 22프레임 중 1건이 이 유형이었음).
+const myHint={id:null,n:0};
 function identifyMyMon(f,R){
-  const team=activeTeam();if(!team)return;
-  const region=cropRegionImg(f,R.myIcon);
-  const barH=R.myIcon.barH||Math.round((R.myIcon.y1-R.myIcon.y0)/3);
-  const r=identifyOppIcon(region,barH,expandTeamIds(team)); // 메가폼 포함(메가 진화 시 인식)
-  if(r&&r.id!==state.myMon){state.myMon=r.id;fetchLive(baseOf(r.id)).then(()=>{if(state.lastScreen==="battle")renderBattle();});toast("내 포켓몬(자동): "+DB.creatures[r.id].ko);}
+  const ids=myBattleIds();if(!ids.length)return;
+  ensureAssets();
+  const cand=assetList.filter(a=>ids.includes(a.id));
+  if(!cand.length)return;
+  const r=BM.identify(cropRegionImg(f,R.myIcon),cand);
+  if(!r){myHint.id=null;myHint.n=0;return;}                        // 이름바 없음(연출·메뉴) → 판단 보류
+  if(r.id===myHint.id)myHint.n++;else{myHint.id=r.id;myHint.n=1;}
+  const base=baseOf(r.id);
+  if(myHint.n<2||(base===state.myMon&&(state.myForme||null)===(/-Mega/.test(r.id)?r.id:null)))return;
+  state.myMon=base;                                                // 계산·표시는 종족 기준(topSet/usage)
+  state.myForme=/-Mega/.test(r.id)?r.id:null;                      // 필드에서 확인된 내 메가폼(있으면)
+  fetchLive(base).then(()=>{if(state.lastScreen==="battle")renderBattle();});
+  toast("내 포켓몬(자동): "+koWithMega(r.id));
 }
 
 // 화면 모듈 등록 — 코어 tick이 분류 결과에 따라 호출(enter=전환 1회, handle=매 틱, reset=강제 재인식)
