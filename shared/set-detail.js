@@ -91,6 +91,20 @@ function matchByRender(gameRaster,candidates,renderText){
   if(!best)return null;
   return {...best,score:bs,margin:bs-(second<0?0:second)};
 }
+// 후보 전체를 유사도 내림차순으로 반환 [{...cand,score}]. 기술 4행 중복 해소용(차순위 재배정).
+function rankByRender(gameRaster,candidates,renderText){
+  if(!candidates.length)return [];
+  if(candidates.length===1)return [{...candidates[0],score:1}];
+  if(!renderText)return [];
+  const out=[];
+  for(const cand of candidates){
+    let rr;try{rr=renderText(cand.ko);}catch(e){continue;}
+    if(!rr||!rr.mask)continue;
+    out.push({...cand,score:similarity(gameRaster,rasterize(rr.mask,rr.width,rr.height))});
+  }
+  out.sort((a,b)=>b.score-a.score);
+  return out;
+}
 function detectAbility(img,card,species,DB,renderText){
   const cands=abilityCandidates(species,DB);
   if(cands.length<=1)return cands[0]?{...cands[0],score:1}:null;
@@ -171,16 +185,30 @@ function moveCandidates(species,type,DB,LEARNSETS,usage){
   }
   return base;
 }
+// 기술 4행 인식. 각 행을 독립 매칭하면 두 행이 같은 기술을 뽑을 수 있음(포켓몬은 중복 기술 불가 → 오답).
+// 유저 규칙: 중복이면 **정확도(score) 높은 행이 그 기술을 갖고, 나머지 행은 다음 신뢰도 후보로**.
+// → 행별 순위 리스트를 만들고 전역 점수 내림차순 그리디 배정(이미 배정된 행·기술은 건너뜀). 3~4중 충돌도 일반화.
 function detectMoves(img,card,species,DB,LEARNSETS,renderText,usage){
   const rows=moveRows(img,card);const CW=card.x1-card.x0;
   const nx0=card.x0+Math.round(CW*MNAMEX[0]),nx1=card.x0+Math.round(CW*MNAMEX[1]);
-  return rows.map(row=>{
+  const perRow=rows.map(row=>{
     const type=detectMoveType(img,card,row);        // ①타입 스캔
     const cands=moveCandidates(species,type,DB,LEARNSETS,usage); // ②픽률(5%)+타입 확인
     const g=extractText(img,nx0,nx1,row[0]-1,row[1]+2);
-    const best=g.w?matchByRender(g,cands,renderText):null;       // ③매칭
-    return best?{key:best.key,ko:best.ko,type:best.type||type,score:best.score}:{key:null,ko:null,type};
+    const ranked=g.w?rankByRender(g,cands,renderText):[];         // ③행별 후보 순위(내림차순)
+    return {type,ranked};
   });
+  // ④중복 해소: (행,후보,score) 전부를 score 내림차순 → 아직 안 찬 행에 아직 안 쓰인 기술을 순서대로 배정
+  const pairs=[];
+  perRow.forEach((r,i)=>r.ranked.forEach(c=>pairs.push({i,c})));
+  pairs.sort((a,b)=>b.c.score-a.c.score);
+  const pick=new Array(perRow.length).fill(null);const taken=new Set();
+  for(const p of pairs){
+    if(pick[p.i]||taken.has(p.c.key))continue;
+    pick[p.i]=p.c;taken.add(p.c.key);
+  }
+  return perRow.map((r,i)=>{const b=pick[i];
+    return b?{key:b.key,ko:b.ko,type:b.type||r.type,score:b.score}:{key:null,ko:null,type:r.type};});
 }
 
 // ── 아이템 ────────────────────────────────────────────────────────────────
@@ -223,6 +251,6 @@ function makeCanvasRenderer(font){
   };
 }
 
-return {NW,NH,rasterize,similarity,extractText,leftTextRows,abilityRowBand,itemRowBand,abilityCandidates,matchByRender,detectAbility,
+return {NW,NH,rasterize,similarity,extractText,leftTextRows,abilityRowBand,itemRowBand,abilityCandidates,matchByRender,rankByRender,detectAbility,
         moveRows,detectMoveType,moveCandidates,detectMoves,itemCandidates,detectItem,makeCanvasRenderer};
 });
