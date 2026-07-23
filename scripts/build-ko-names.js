@@ -13,15 +13,16 @@
 //   포케모음은 챔피언스 전용 한국어 소스라 이쪽을 1순위로 삼는다. 특성 187개는 원래 전부 일치(보정 0건).
 //
 // ⚠ 포케모음 vs PokéAPI가 갈리는 소수 항목(실사용): Brick Break(깨트리기/깨뜨리다),
-//   Covet(탐내기/탐내다), Spicy Extract(하바네로액기스/하바네로엑기스). 여기선 포케모음을 채택 —
-//   실게임 화면에서 확인되면 OVERRIDE에 넣어 고정할 것.
+//   Covet(탐내기/탐내다), Spicy Extract(하바네로액기스/하바네로엑기스).
+//   **유저 확인(2026-07-24): 갈리면 포케모음이 맞다** (Brick Break=깨트리기). → 포케모음 단일 소스로 간다.
 const fs=require("fs"),path=require("path"),https=require("https"),zlib=require("zlib");
 const ROOT=path.join(__dirname,"..");
 global.window=global;require(path.join(ROOT,"data.js"));
 const DB=global.window.DB;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,"");
 
-// 실게임 확인으로 확정된 표기만 여기에 (포케모음보다 우선)
+// 실게임 확인으로 확정된 표기만 여기에 (포케모음보다 우선). 지금은 비어 있음 —
+// 유저 결정(2026-07-24): **소스가 갈리면 포케모음을 따른다**(Brick Break=깨트리기 확인).
 const OVERRIDE={moves:{},items:{}};
 
 function get(url){return new Promise((res,rej)=>{
