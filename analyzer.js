@@ -20,7 +20,7 @@ function ptsFromSp(sp){const o={};for(const[k,v]of Object.entries(sp||{}))o[SPKE
 
 // ===== 픽률 1위 추정 세트 =====
 // 반환: {cfg(buildSide 입력), moves(4), meta:{natureKo,spread,itemKo,mega,confidence}}
-function topSet(id){
+function topSet(id,formeForce){
   const u=usageOf(id);
   const c=cre(id);if(!c)return null;
   let species=id,forme=null;
@@ -35,6 +35,8 @@ function topSet(id){
   }else if(DB.items[item]&&DB.items[item].mega&&DB.creatures[DB.items[item].mega]){
     forme=DB.items[item].mega;
   }
+  // 메가폼 강제(복수 메가 X/Y 비교용): usage 기반 forme를 지정 메가폼으로 override(종족값·타입만 바뀜, 세트는 usage 유지)
+  if(formeForce&&DB.creatures[formeForce]&&/-Mega/.test(formeForce))forme=formeForce;
   const nature=u&&u.na&&u.na[0]?u.na[0][0]:"Serious";
   const pts=u&&u.sp&&u.sp[0]?ptsFromSp(u.sp[0][0]):{};
   const ability=u&&u.ab&&u.ab[0]?u.ab[0][0]:(c.ab&&(c.ab["0"]||c.ab.H))||"";
@@ -53,7 +55,7 @@ function topSet(id){
 // 상대 종족값 기준: 최저(하강보정 0포인트)/무보정/준속(+32)/최속(1.1*(무보정+32))/최속스카프/픽률1위 세트
 function speedScenarios(id,opts){
   opts=opts||{};
-  const set=topSet(id);
+  const set=topSet(id,opts.forme);
   const specId=set&&set.cfg.forme?set.cfg.forme:id;
   const b=cre(specId).bs.spe;
   const lo=Math.floor((Math.floor(2*b*50/100)+5)*0.9);
@@ -78,7 +80,7 @@ function speedScenarios(id,opts){
 // mySpe: 내 실수치(랭크/스카프/순풍 반영된 값). 반환: 시나리오별 first: 'me'|'opp'|'tie'
 function firstStrike(mySpe,oppId,opts){
   opts=opts||{};
-  const sc=speedScenarios(oppId,{tailwind:opts.oppTailwind});
+  const sc=speedScenarios(oppId,{tailwind:opts.oppTailwind,forme:opts.forme});
   const judge=v=>{
     if(v==null)return null;
     if(v===mySpe)return "tie";
@@ -109,8 +111,8 @@ function koLine(atkCfg,defCfg,moveId,env){
     pctMin:Math.round(r.min/hp*1000)/10,pctMax:Math.round(r.max/hp*1000)/10,
     ko:ko.t,koClass:ko.c,eff:r.eff,notes:r.notes};
 }
-function koMatrix(myCfg,myMoves,oppId,env){
-  const oppSet=topSet(oppId);
+function koMatrix(myCfg,myMoves,oppId,env,formeForce){
+  const oppSet=topSet(oppId,formeForce);
   if(!oppSet)return null;
   const oppCfg=oppSet.cfg;
   const mine=(myMoves||[]).map(m=>koLine(myCfg,oppCfg,m,env)).filter(Boolean);
@@ -136,9 +138,9 @@ const DISRUPT=new Set(["Encore","Taunt","Knock Off","Trick","Switcheroo","Haze",
 const BULK_ITEM=new Set(["Leftovers","Sitrus Berry","Assault Vest","Eviolite","Rocky Helmet"]);
 const OFF_ITEM=new Set(["Choice Band","Choice Specs","Life Orb","Choice Scarf","Muscle Band","Wise Glasses","Expert Belt"]);
 
-function estimateRole(id){
+function estimateRole(id,formeForce){
   const u=usageOf(id);
-  const set=topSet(id);
+  const set=topSet(id,formeForce);
   if(!u||!set)return {role:"정보 없음",tags:[],confidence:0};
   const specId=set.cfg.forme||id;
   const c=cre(specId);

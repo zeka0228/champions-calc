@@ -84,6 +84,11 @@ function classify(img,rect){
     const centerYellow=ratio(img,rect,0.44,0.56,0.30,0.50,isYellow);
     if(centerYellow>0.03)return {screen:"matchmaking",centerPurple,centerYellow,conf:Math.min(1,centerPurple)};
   }
+  // 0.5) 팀등록(팀 상세 화면): 상단 라임 탭(능력/스테이터스)은 다른 화면에 없는 고유 앵커.
+  //   실측: 팀등록 라임 0.08 vs 선출/배틀/매칭 0.00 → 오검출 0. 카드 상세 검출·6마리 식별은 team-register.js.
+  //   배틀이 아닌 화면에서만 팀 인식(요구사항) → classify가 배틀과 자연히 분리(배틀은 자홍 이름바, 여긴 없음).
+  const teamTab=ratio(img,rect,0.30,0.70,0.135,0.205,isLime);
+  if(teamTab>0.03)return {screen:"teamregister",teamTab,conf:1};
   // 1) 선출: 우측 자홍 카드 밴드 4개 이상 + 좌측 보라 파티 카드 존재
   const bands=rightBandCount(img,rect);
   if(bands>=4){
@@ -201,6 +206,13 @@ function detectRegions(img,screen,rect){
       out.myName={x0:my.x0+Math.floor(bw*0.02),y0:my.y0+Math.floor(bh*0.10),
                   x1:my.x1-Math.floor(bw*0.30),y1:my.y1-Math.floor(bh*0.10),src:"anchor"};
     }
+    // 내 이름바 2D 도감 아이콘 → 등록된 내 팀과 매칭해 "지금 출전한 내 포켓몬" 자동 인식.
+    // ⚠ 라임 앵커에 매달지 않는다: 실배틀 91프레임 확인 결과 바 테두리 색이 프레임마다
+    //   라임(177,228,77) ↔ 연보라(177,175,220) ↔ 어두운 라임(132,152,44)으로 바뀌어(턴 하이라이트)
+    //   limeBarBottomLeft가 HP바 초록을 바로 오인하거나 아예 실패했다(아이콘 잘림 → 매칭 실패).
+    // UI가 게임영역에 고정 앵커라 비율이 매우 안정적(실측 2560x1392·1954x1114 두 종횡비 모두 포함).
+    // 매칭은 슬라이딩(멀티스케일)이라 넉넉한 박스면 충분 → 아래 비율 상자로 고정.
+    out.myIcon=cropToBox(CROPS.myIcon,rect);
   }
   return out;
 }
@@ -252,6 +264,8 @@ function hashDiff(a,b){
 const CROPS={
   oppName:{x:0.790,y:0.026,w:0.158,h:0.060},
   myName:{x:0.056,y:0.846,w:0.168,h:0.052},
+  // 내 이름바 아이콘(도감 2D) 탐색 상자 — 실배틀 91프레임 검증(2560x1392·1954x1114 모두 아이콘 전체 포함)
+  myIcon:{x:0.012,y:0.842,w:0.090,h:0.128},
 };
 
 return {analyze,classify,detectGameRect,detectRegions,detectSelectCards,frameHash,hashDiff,CROPS,

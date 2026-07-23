@@ -1,11 +1,34 @@
-// overlay.js — 오버레이 렌더러: 캡처 루프 → 화면 분류 → 인식 → HUD
+// overlay.js — 오버레이 렌더러 **코어**: 캡처 루프 → 화면 분류 → 화면 모듈 디스패치 + 공용 유틸
+//
+// ▸ 파일 분리(트랙별 담당, 공유 파일 동시편집 충돌 방지):
+//     overlay.js         (코어)  캡처·분류·틱·공용 유틸·클릭통과/드래그   — 공용(변경 시 양 트랙 합의)
+//     overlay-battle.js  (2번)   매칭·선출·배틀 상대 식별·선공/타수 HUD
+//     overlay-team.js    (1번)   내 팀 등록 HUD·세트 상세·세트 편집 UI·스캔 병합
+//   HTML 로드 순서: overlay.js → overlay-battle.js → overlay-team.js (전역 스코프 공유, 코어가 먼저)
+//
+// ▸ 코어가 제공하는 것(두 모듈이 사용): DB/E/A/SC/SM/TR/TD/SR/SD, ipcRenderer, state, $, toast, dlog,
+//   tick, grabFrame, baseOf, megaFormeOf/megaFormesOf, ensureAssets/assetList, ensureMegaIcon,
+//   fetchLive/liveUsage/usageOf, CAP, TYPE_KO/TYPE_HEX/STAT_KO, registerScreen.
+// ▸ 코어는 각 화면 모듈의 내부를 모른다 — registerScreen(name,{enter,handle,leave,reset})로만 연결.
 const {ipcRenderer}=require("electron");
 // nodeIntegration 렌더러엔 module이 정의돼 있어 UMD 모듈들이 window에 안 붙음(module.exports로 감).
 // → window 전역 대신 require로 로드 (matcher.js 등 원본 무수정). data/spriteindex는 window 직접 할당이라 그대로 사용.
 const DB=window.DB;
 const E=require("../engine.js"),A=require("../analyzer.js"),
       SC=require("../shared/screen-classifier.js"),SM=require("../matcher.js");
+const TR=require("../shared/team-register.js"); // 팀등록 화면 → 내 팀 6마리 인식
+const TD=require("../shared/team-detail.js");   // 팀등록 상세 → 세트(수치·성격·아이템·EV) 추출
+const SR=require("../shared/select-recognize.js"); // 선출 화면 → 상대 6마리 견고 인식(팀스캔 방식)
+const SD=require("../shared/set-detail.js");    // 능력탭 텍스트 인식 → 특성·기술(렌더-매칭)
 E.init(DB);
+
+// ===== 종족·폼 공용 유틸 =====
+function baseOf(id){const c=DB.creatures[id];return c&&c.base&&DB.creatures[c.base]?c.base:id;}
+function megaFormeOf(species){const c=DB.creatures[species];if(!c||!c.formes)return null;
+  return c.formes.find(f=>/-Mega/.test(f)&&DB.creatures[f])||null;}
+// 종족의 모든 메가폼(리자몽 X/Y 등 복수) — 배틀 아이콘 후보/사전 확보용
+function megaFormesOf(species){const c=DB.creatures[species];if(!c||!c.formes)return [];
+  return c.formes.filter(f=>/-Mega/.test(f)&&DB.creatures[f]);}
 
 // ===== 실시간 채용률 (live 우선, 6시간 캐시, 실패 시 내장 폴백) =====
 const liveUsage={};
@@ -39,10 +62,18 @@ async function fetchLive(id){
   }
 }
 A.init(DB,id=>liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null);
+// 채용률 조회 — live(API) 우선, 내장 폴백. usage.mv/it 이름은 DB.moves/DB.items 키와 동일(pct 0~100).
+// ⚠ 폼 우선: 리저널폼은 자체 픽률 키가 있다(Samurott-Hisui|singles 등, API도 폼 데이터 제공).
+//   먼저 폼 id로 조회하고 없을 때만 base로 폴백 → 메가·코스메틱폼은 자체 키가 없어 base로 수렴.
+//   (기존엔 baseOf로 먼저 뭉개 리저널폼 픽률이 전부 원종 값으로 나오던 버그)
+function usagePick(id){return liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null;}
+function usageOf(id){return usagePick(id)||usagePick(baseOf(id));}
 
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
-const state={oppTeam:[],oppCur:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
+const state={oppTeam:[],oppMons:[],oppSig:null,oppCur:null,oppMegaSel:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
+// [로컬 전용] 데이터셋 캡처는 gitignore된 capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
+let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
 let assetList=null;
 function ensureAssets(){
   if(assetList)return;
@@ -53,9 +84,37 @@ function ensureAssets(){
     assetList.push({id,img:{data:arr,width:40,height:40}});
   }
 }
+// 메가 아이콘 확보: SPRITE_INDEX엔 메가폼이 없음 → 스프라이트 webp를 40x40으로 렌더해 배틀 매칭 후보에 추가.
+const megaIconTried={};
+function ensureMegaIcon(forme){
+  if(!forme||megaIconTried[forme])return;ensureAssets();
+  if(assetList.some(a=>a.id===forme)){megaIconTried[forme]=true;return;}
+  const c=DB.creatures[forme];if(!c)return;megaIconTried[forme]=true;
+  const im=new Image();
+  im.onload=()=>{try{const cv=document.createElement("canvas");cv.width=40;cv.height=40;
+    const ctx=cv.getContext("2d",{willReadFrequently:true});ctx.drawImage(im,0,0,40,40);
+    const d=ctx.getImageData(0,0,40,40).data;
+    if(!assetList.some(a=>a.id===forme))assetList.push({id:forme,img:{data:new Uint8Array(d),width:40,height:40}});}catch(e){}};
+  im.src="../assets/sprites/"+c.sprite+".webp";
+}
 const toast=t=>{const e=$("toast");e.textContent=t;e.style.display="block";
   clearTimeout(toast._t);toast._t=setTimeout(()=>e.style.display="none",4000);
   ipcRenderer.send("to-control","overlay-status",t);};
+// 진단 로그: control 창 "진단 로그" 패널에 시각순 누적(+ DevTools 콘솔). kind: ""|cap|ok|err
+const dlog=(msg,kind)=>{try{console.log("[진단] "+msg);ipcRenderer.send("to-control","diag",{line:msg,kind});}catch(e){}};
+// 표시용 라벨 맵(공용)
+const TYPE_KO={Normal:"노말",Fire:"불꽃",Water:"물",Electric:"전기",Grass:"풀",Ice:"얼음",Fighting:"격투",Poison:"독",Ground:"땅",Flying:"비행",Psychic:"에스퍼",Bug:"벌레",Rock:"바위",Ghost:"고스트",Dragon:"드래곤",Dark:"악",Steel:"강철",Fairy:"페어리"};
+const TYPE_HEX={Normal:"#9099a1",Fire:"#e8663a",Water:"#4d90d5",Electric:"#e0b528",Grass:"#5ca54a",Ice:"#6bc4c6",Fighting:"#c23a4a",Poison:"#9354a0",Ground:"#d98f45",Flying:"#8caadd",Psychic:"#e5628a",Bug:"#94b13a",Rock:"#b7a355",Ghost:"#5a6ab0",Dragon:"#5566d9",Dark:"#5a5366",Steel:"#5b95a3",Fairy:"#e08fca"};
+const STAT_KO={hp:"HP",atk:"공격",def:"방어",spa:"특공",spd:"특방",spe:"스피드"};   // 긴 스탯키 → 한글
+
+// ===== 화면 모듈 등록 =====
+// 각 트랙이 자기 화면을 등록한다. 코어는 훅만 호출하고 내용은 모른다(파일 분리 계약).
+//   enter(prev)  — 그 화면으로 "전환된" 틱에 1회
+//   handle(f,a)  — 그 화면인 매 틱 (f=프레임, a=SC.analyze 결과)
+//   leave(next)  — 그 화면에서 "벗어난" 틱에 1회
+//   reset()      — Alt+R/재인식(force-recognize) 시 상태 초기화
+const SCREENS={};
+function registerScreen(name,hooks){SCREENS[name]=hooks||{};}
 
 // ===== 캡처 =====
 let video=$("cap"),capReady=false;
@@ -69,13 +128,10 @@ ipcRenderer.on("source-selected",async(e,{id,name})=>{
     toast("캡처 시작: "+name);
   }catch(err){toast("캡처 실패: "+err.message);}
 });
-ipcRenderer.on("my-mon",(e,{id})=>{
-  state.myMon=id;fetchLive(id).then(()=>{if(state.lastScreen==="battle")renderBattle();});
-  toast("내 포켓몬: "+DB.creatures[id].ko);
-});
-// 새 매치/강제 재인식: 선출 잠금 해제 후 다시 인식
+// 새 매치/강제 재인식: 각 화면 모듈이 자기 상태를 초기화한 뒤 즉시 재처리
 ipcRenderer.on("force-recognize",()=>{
-  state.oppLocked=false;state.oppCur=null;state.lastHash=null;tick(true);
+  for(const k in SCREENS){const h=SCREENS[k];if(h&&h.reset)h.reset();}
+  state.lastHash=null;tick(true);
   toast("재인식 — 선출 잠금 해제");
 });
 
@@ -91,178 +147,25 @@ async function tick(force){
   if(state.busy||!capReady)return;
   const f=grabFrame();if(!f)return;
   const h=SC.frameHash(f.img);
-  if(!force&&state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01)return; // 정지 화면 스킵
+  const staticFrame=state.lastHash&&SC.hashDiff(state.lastHash,h)<0.01;
+  // 정지 화면 스킵 — 단 팀등록은 예외: 16×9 밝기 해시가 거칠어 '다른 팀'을 정지로 오판(레이아웃 동일)하므로
+  // A팀→B팀 전환·오인식 재시도를 놓침. 팀등록 화면에선 정지여도 항상 재처리(등록 여부 무관, 인식될 때까지 시도).
+  if(!force&&staticFrame&&state.lastScreen!=="teamregister")return;
   state.lastHash=h;
   const a=SC.analyze(f.img);   // 게임영역 크롭 → 분류 → 동적 영역 산출 → 저해상도 가드
   const prev=state.lastScreen;state.lastScreen=a.screen;
-  $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",other:"대기"}[a.screen];
+  if(prev!==a.screen)dlog(`화면 전환: ${a.screen} (rect ${a.rect.w}x${a.rect.h}${a.lowRes?" 저해상도⚠":""})`,a.screen==="teamregister"?"ok":"");
+  $("mode").textContent={select:"선출",battle:"배틀",matchmaking:"매칭",teamregister:"팀등록",other:"대기"}[a.screen];
   $("conf").textContent=a.conf?Math.round(a.conf*100)+"%":"";
   if(a.lowRes)toast(`캡처가 작아 인식 정확도 저하 가능 (게임영역 ${a.rect.w}px) — 고해상도 캡처 권장`);
-  if(a.screen==="matchmaking"){
-    if(prev!=="matchmaking"){ // 새 매치 진입 1회 → 선출 잠금 자동 해제
-      state.oppLocked=false;state.oppCur=null;state.oppTeam=[];
-      $("content").innerHTML='<div class="small">매칭 중… 선출 화면을 기다립니다</div>';
-      toast("새 매치 감지 — 선출 잠금 해제");
-    }
-  }
-  else if(a.screen==="select")await onSelect(f,a);
-  else if(a.screen==="battle")await onBattle(f,a);
+  if(CAP)CAP.onScreen(a.screen); // [로컬] 데이터셋 캡처 화면상태 갱신
+  // 화면 전환 → 이전 화면 모듈 정리(예: 팀등록 이탈 시 상세 패널 닫기·재렌더 dedupe 리셋)
+  if(prev!==a.screen){const p=SCREENS[prev];if(p&&p.leave)p.leave(a.screen);}
+  const cur=SCREENS[a.screen];if(!cur)return;
+  if(prev!==a.screen&&cur.enter)cur.enter(prev);
+  if(cur.handle)await cur.handle(f,a);
 }
 setInterval(()=>tick(false),1200);
-
-// ===== 선출 화면: 상대 6마리 매칭 → 역할 추정 =====
-// 프레임 독립: analyze()가 게임영역 기준으로 검출한 카드 지오메트리(절대 좌표)를
-// matcher.extractSprite 로 소비 (matcher.js 원본 무수정).
-async function onSelect(f,a){
-  if(state.oppLocked)return; // 한 번 인식하면 고정 — 배틀 중 교체 엔트리 등 선출-유사 화면 재인식 방지. 새 매치(Alt+R/버튼)에서만 해제
-  state.busy=true;
-  try{
-    ensureAssets();
-    const cards=a.regions.cards;
-    if(cards){
-      const img={data:f.img.data,width:f.img.width,height:f.img.height};
-      const geo={xL:cards.xL,xR:cards.xR};
-      const ids=[];
-      for(const band of cards.bands){
-        const region=SM.extractSprite(img,geo,band);
-        if(!region){ids.push(null);continue;}
-        const edge=SM.extractSpriteEdge(img,geo,band);
-        const ranked=SM.matchAll(region,edge,assetList);
-        const byCorr=[...ranked].sort((x,y)=>y.corr-x.corr);
-        const d=SM.decide({best:ranked[0],bestCorr:byCorr[0]});
-        ids.push(d?d.id:null);
-      }
-      const good=ids.filter(Boolean);
-      if(good.length>=3){
-        state.oppTeam=good;
-        state.oppLocked=true; // 고정: 이후 재인식 안 함 (새 매치에서 Alt+R/버튼으로 해제)
-        for(const id of good)fetchLive(baseOf(id));
-        renderSelect();
-        toast("선출 인식(고정): "+good.map(id=>DB.creatures[id].ko).join(", "));
-      }
-    }
-  }catch(err){toast("선출 인식 오류: "+err.message);}
-  state.busy=false;
-}
-function baseOf(id){const c=DB.creatures[id];return c&&c.base&&DB.creatures[c.base]?c.base:id;}
-const ROLE_CLS=r=>/물리/.test(r.role)&&/어태커/.test(r.role)?"phys":/특수 어태커|양면/.test(r.role)?"spec":/막이/.test(r.role)?"wall":"sup";
-function renderSelect(){
-  const el=$("content");el.innerHTML="<h3>상대 팀 역할 추정</h3>";
-  for(const id of state.oppTeam){
-    const c=DB.creatures[id],r=A.estimateRole(baseOf(id));
-    const d=document.createElement("div");d.className="roleRow";
-    d.innerHTML=`<img src="../assets/sprites/${c.sprite}.webp" onerror="this.style.visibility='hidden'">
-      <div><span class="nm">${c.ko}</span> <span class="rl ${ROLE_CLS(r)}">${r.role}</span>
-      <span class="small">${r.confidence}%</span>
-      <div class="tags">${r.tags.join(" · ")||"-"}</div></div>`;
-    el.appendChild(d);
-  }
-}
-
-// ===== 배틀 화면: 이름바 2D 아이콘 → 선출 6마리 템플릿 매칭 → 활성 상대 =====
-// 게임 이름 폰트는 OCR 불가(ERR-001). 대신 이름바에 얹힌 2D 도감 스프라이트 아이콘을
-// 선출에서 잡은 6마리와 "마스크 멀티스케일 템플릿 매칭". 후보가 6마리뿐이라 부분 가림·
-// 배경 혼재에도 강하고 저렴. (실검증: 불카모스 4354 vs 2위 11829, 격차 3배)
-let battleBusy=false;
-// 절대 박스 {x0,y0,x1,y1} 를 이미지 객체로 크롭
-function cropRegionImg(f,box){
-  const W=f.img.width,H=f.img.height,d=f.img.data;
-  const x0=Math.max(0,box.x0|0),y0=Math.max(0,box.y0|0),x1=Math.min(W,box.x1|0),y1=Math.min(H,box.y1|0);
-  const w=Math.max(1,x1-x0),h=Math.max(1,y1-y0),out=new Uint8Array(w*h*4);
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const si=((y0+y)*W+(x0+x))*4,di=(y*w+x)*4;
-    out[di]=d[si];out[di+1]=d[si+1];out[di+2]=d[si+2];out[di+3]=255;}
-  return {data:out,width:w,height:h};
-}
-function scaleRGBA(a,w,h){
-  const out=new Uint8Array(w*h*4);
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
-    const sx=Math.min(a.width-1,(x*a.width/w)|0),sy=Math.min(a.height-1,(y*a.height/h)|0);
-    const si=(sy*a.width+sx)*4,di=(y*w+x)*4;
-    out[di]=a.data[si];out[di+1]=a.data[si+1];out[di+2]=a.data[si+2];out[di+3]=a.data[si+3];
-  }
-  return {data:out,width:w,height:h};
-}
-// 알파(>140) 마스크 템플릿을 region 위에서 스케일·위치 탐색 → 최소 MSE
-function matchTemplate(region,asset,scales){
-  let best=1e9;
-  for(const S of scales){
-    const T=scaleRGBA(asset,S,S);
-    for(let oy=-Math.floor(S*0.2);oy<=region.height-S*0.4;oy+=3)
-      for(let ox=-Math.floor(S*0.15);ox<=region.width-S*0.4;ox+=3){
-        let sum=0,n=0;
-        for(let ty=0;ty<S;ty+=2)for(let tx=0;tx<S;tx+=2){
-          const ti=(ty*S+tx)*4;if(T.data[ti+3]<140)continue;
-          const rx=ox+tx,ry=oy+ty;if(rx<0||ry<0||rx>=region.width||ry>=region.height)continue;
-          const ri=(ry*region.width+rx)*4;
-          const dr=region.data[ri]-T.data[ti],dg=region.data[ri+1]-T.data[ti+1],db=region.data[ri+2]-T.data[ti+2];
-          sum+=dr*dr+dg*dg+db*db;n++;
-        }
-        if(n<150)continue;const sc=sum/n;if(sc<best)best=sc;
-      }
-  }
-  return best;
-}
-// region 에서 teamIds 6마리 중 활성 상대 식별. 절대점수 낮고 2위와 격차 충분할 때만 채택.
-// 임계(ABS_THR/MARGIN_MIN)는 합성 프레임 2개로 잡은 잠정값 — 실전 캡처로 튜닝 필요.
-const ABS_THR=6500,MARGIN_MIN=0.15,TARGET_BARH=30;
-function identifyOppIcon(region,barH,teamIds){
-  ensureAssets();
-  const cand=assetList.filter(a=>teamIds.includes(a.id));
-  if(!cand.length)return null;
-  // 해상도 무관 상수시간: 아이콘 영역을 고정 크기로 축소(bar 높이→TARGET) 후 매칭.
-  // 720ms→~60ms(약 12배), 마진도 커짐(노이즈 감소). 4K 캡처여도 동일 비용.
-  const f=Math.min(1,TARGET_BARH/Math.max(1,barH));
-  if(f<1)region=scaleRGBA(region,Math.max(8,Math.round(region.width*f)),Math.max(8,Math.round(region.height*f)));
-  const scales=[1.5,1.8,2.1,2.5,3.0].map(k=>Math.max(20,Math.round(TARGET_BARH*k)));
-  const scored=cand.map(a=>({id:a.id,score:matchTemplate(region,a.img,scales)})).sort((x,y)=>x.score-y.score);
-  const b=scored[0],s=scored[1];
-  if(b.score<ABS_THR&&(!s||s.score-b.score>b.score*MARGIN_MIN))return {id:b.id,score:b.score};
-  return null;
-}
-async function onBattle(f,a){
-  if(battleBusy)return;battleBusy=true;state.busy=true;
-  try{
-    const R=a.regions;
-    if(R.oppIcon&&state.oppTeam.length){
-      const region=cropRegionImg(f,R.oppIcon);
-      const barH=R.oppIcon.barH||Math.round((R.oppIcon.y1-R.oppIcon.y0)/3);
-      const r=identifyOppIcon(region,barH,state.oppTeam);
-      if(r&&r.id!==state.oppCur){
-        state.oppCur=r.id;await fetchLive(baseOf(r.id));renderBattle();
-        toast("상대: "+DB.creatures[r.id].ko);
-      }
-    }
-  }catch(err){toast("상대 인식 오류: "+err.message);}
-  battleBusy=false;state.busy=false;
-}
-function renderBattle(){
-  const el=$("content");
-  if(!state.oppCur){el.innerHTML='<div class="small">상대 인식 대기 중…</div>';return;}
-  if(!state.myMon){el.innerHTML='<div class="small">설정 창에서 내 포켓몬을 선택하세요</div>';return;}
-  const opp=baseOf(state.oppCur),my=state.myMon;
-  const myTop=A.topSet(my);
-  const myStats=E.calcStats(DB.creatures[myTop.cfg.forme||my],myTop.cfg.nature,myTop.cfg.pts);
-  const fsRes=A.firstStrike(myStats.spe,opp);
-  const lbl={neu:"무보정",semi:"준속",mx:"최속",scarf:"스카프",est:"픽률1위"};
-  let html=`<h3>${DB.creatures[my].ko} vs ${DB.creatures[state.oppCur].ko}</h3>
-    <div class="small">내 실속 ${myStats.spe} (픽률1위 세트 기준 — 추후 내 세트 연동)</div><div class="spd">`;
-  for(const k of["neu","semi","mx","scarf","est"]){
-    const s=fsRes.scenarios[k];if(s.spe==null)continue;
-    const c=s.first==="me"?"win":s.first==="opp"?"lose":"tie";
-    html+=`<span class="${c}">${lbl[k]} ${s.spe}</span>`;
-  }
-  html+=`</div><div class="small">${fsRes.estNote}</div>`;
-  const km=A.koMatrix(myTop.cfg,myTop.atkMoves,opp);
-  if(km){
-    html+=`<h3 style="margin-top:8px">상대 → 나 (위험한 순)</h3>`;
-    for(const l of km.theirs.slice(0,4))
-      html+=`<div class="dmgRow"><span>${l.moveKo}</span><span class="${l.koClass}">${l.pctMin}~${l.pctMax}% · ${l.ko}</span></div>`;
-    html+=`<h3 style="margin-top:8px">나 → 상대</h3>`;
-    for(const l of km.mine.slice(0,4))
-      html+=`<div class="dmgRow"><span>${l.moveKo}</span><span class="${l.koClass}">${l.pctMin}~${l.pctMax}% · ${l.ko}</span></div>`;
-  }
-  el.innerHTML=html;
-}
 
 // ===== 클릭 통과 제어 + HUD 드래그 =====
 // 기본은 전체 클릭 통과(main이 setIgnoreMouseEvents(true,forward)). 커서가 HUD 위일 때만 캡처 요청 →
