@@ -166,6 +166,31 @@ function detectTypes(img,card){
   // 1타입은 넉넉히, 2번째 타입은 1위 대비 0.42배 이상일 때만(약한 스퍼리어스 2타입 컷 — 진짜 2타입은 0.7배+)
   return arr.filter(([t,v],i)=>i===0?v>=25:v>=Math.max(30,m*0.42)).slice(0,2).map(x=>x[0]);
 }
+// 폼 확정: 아이콘 매칭이 종족(base 그룹)까지만 맞혀도, 카드에 표시된 실제 타입으로 정확한 폼을 고른다.
+// 리저널폼 15종은 전부 원종과 타입이 다름(대검귀 Water vs 대검귀-히스이 Water/Dark 등) → 타입이 결정적 단서.
+// 규칙: 같은 base 그룹(메가 제외, 스프라이트 있는 폼만) 중 **검출 타입을 가장 많이 커버**하는 폼 선택.
+//   동점이면 아이콘 매칭 결과(id) 유지 = 타입은 좁히고 아이콘이 동점을 가른다.
+//   감점 없음 → 2타입 폼에서 2번째 타입을 놓쳐도 base로 잘못 뒤집히지 않음(부분검출 안전, 실측 30/30).
+//   그룹 타입이 전부 같으면(펌킨인 크기·바스라오-F 등) 타입 무의미 → 아이콘에 맡기고 무변경.
+function resolveForm(id,types,creatures,assets){
+  if(!id||!types||!types.length||!creatures)return id;
+  const c=creatures[id];if(!c)return id;
+  const baseOf=k=>{const ck=creatures[k];return (ck&&ck.base&&creatures[ck.base])?ck.base:k;};
+  const base=baseOf(id);
+  const assetIds=assets?new Set(assets.map(a=>a.id)):null;
+  const group=Object.keys(creatures).filter(k=>{
+    if(baseOf(k)!==base)return false;
+    if(/-Mega/.test(k))return false;                        // 메가는 폼 판별 대상 아님(스톤으로 별도 확정)
+    if(assetIds&&!assetIds.has(k))return false;             // 매칭 후보(스프라이트)에 있는 폼만
+    return true;});
+  if(group.length<2)return id;                              // 폼 변형 없음
+  if(new Set(group.map(k=>(creatures[k].types||[]).join("/"))).size<2)return id; // 전부 동일 타입 → 무변경
+  const cover=k=>{const ts=creatures[k].types||[];let s=0;for(const t of types)if(ts.includes(t))s++;return s;};
+  let best=id,bs=cover(id);
+  for(const k of group){const s=cover(k);if(s>bs){bs=s;best=k;}}
+  return best;
+}
+
 // 유저 규칙: 1타입이면 그 타입, 2타입이면 둘 다 가진 종족(AND). 비면 OR→전체로 폴백.
 function candByTypes(types,typeOf,assets){
   if(!types.length)return assets;
@@ -229,7 +254,8 @@ function recognize(img,rect,matcher,assets,creatures){
     // 타입 먼저 → 후보 선필터(1타입=그 타입, 2타입=둘 다) → 그 안에서만 아이콘 매칭
     const cand=creatures?candByTypes(types,typeOf,assets):assets;
     const ranked=matcher.matchAll(ex.region,ex.edge,cand);
-    mons.push(decideCell(ranked));
+    // 아이콘 매칭 → 그 결과를 카드 타입으로 폼 확정(대검귀 vs 대검귀-히스이 등). 폼별 학습기·픽률이 이 id로 연결됨.
+    mons.push(creatures?resolveForm(decideCell(ranked),types,creatures,assets):decideCell(ranked));
     scores.push(ranked[0]?Math.round(ranked[0].score):null);
   }
   const ok=mons.filter(Boolean).length>=6;
@@ -239,5 +265,5 @@ function recognize(img,rect,matcher,assets,creatures){
 // 팀 서명(순서 무관 종족 집합) — dedup 키
 function signature(mons){return mons.filter(Boolean).slice().sort().join(",");}
 
-return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,detectTypes,detectSelectTypes,candByTypes,recognize,signature};
+return {isLav,detectColumns,cardVspan,detectCells,extractIcon,decideCell,detectTypes,detectSelectTypes,candByTypes,resolveForm,recognize,signature};
 });

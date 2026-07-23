@@ -63,7 +63,11 @@ async function fetchLive(id){
 }
 A.init(DB,id=>liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null);
 // 채용률 조회 — live(API) 우선, 내장 폴백. usage.mv/it 이름은 DB.moves/DB.items 키와 동일(pct 0~100).
-function usageOf(id){id=baseOf(id);return liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null;}
+// ⚠ 폼 우선: 리저널폼은 자체 픽률 키가 있다(Samurott-Hisui|singles 등, API도 폼 데이터 제공).
+//   먼저 폼 id로 조회하고 없을 때만 base로 폴백 → 메가·코스메틱폼은 자체 키가 없어 base로 수렴.
+//   (기존엔 baseOf로 먼저 뭉개 리저널폼 픽률이 전부 원종 값으로 나오던 버그)
+function usagePick(id){return liveUsage[id]||DB.usage[id+"|singles"]||DB.usage[id+"|doubles"]||null;}
+function usageOf(id){return usagePick(id)||usagePick(baseOf(id));}
 
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
