@@ -196,7 +196,7 @@ function detectMoves(img,card,species,DB,LEARNSETS,renderText,usage){
     const cands=moveCandidates(species,type,DB,LEARNSETS,usage); // ②픽률(5%)+타입 확인
     const g=extractText(img,nx0,nx1,row[0]-1,row[1]+2);
     const ranked=g.w?rankByRender(g,cands,renderText):[];         // ③행별 후보 순위(내림차순)
-    return {type,ranked};
+    return {type,g,ranked};
   });
   // ④중복 해소: (행,후보,score) 전부를 score 내림차순 → 아직 안 찬 행에 아직 안 쓰인 기술을 순서대로 배정
   const pairs=[];
@@ -207,6 +207,15 @@ function detectMoves(img,card,species,DB,LEARNSETS,renderText,usage){
     if(pick[p.i]||taken.has(p.c.key))continue;
     pick[p.i]=p.c;taken.add(p.c.key);
   }
+  // ⑤빈칸 폴백(유저 규칙): 중복 해소로 후보 소진돼 비면 **동일 속성(타입)의 다음 스킬**에서 채운다.
+  //   픽률(5%) 필터를 뺀 학습기∩타입 전체를 후보로 다시 랭킹 → 아직 안 쓰인 최고 점수(>0). 게임엔 항상 기술 4개.
+  perRow.forEach((r,i)=>{
+    if(pick[i]||!r.g||!r.g.w)return;                              // 이미 찼거나 텍스트 없음
+    const broad=moveCandidates(species,r.type,DB,LEARNSETS);      // usage 미적용 = 학습기∩타입 전체
+    for(const c of rankByRender(r.g,broad,renderText)){
+      if(c.score>0&&!taken.has(c.key)){pick[i]=c;taken.add(c.key);break;}
+    }
+  });
   return perRow.map((r,i)=>{const b=pick[i];
     return b?{key:b.key,ko:b.ko,type:b.type||r.type,score:b.score}:{key:null,ko:null,type:r.type};});
 }
