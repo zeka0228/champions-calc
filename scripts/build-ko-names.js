@@ -50,7 +50,13 @@ function extract(B){
     const ko=m[1];if(!ko)continue;
     const start=Math.max(B.lastIndexOf('{index:"',m.index),B.lastIndexOf("{_id:",m.index));
     if(start<0||m.index-start>6000)continue;
-    const rec=B.slice(start,m.index+m[0].length);
+    // ⚠ nameko에서 자르면 안 됨 — 메가스톤은 nameko가 앞쪽(name 바로 뒤)이고 분류 근거인 megastone:이
+    //    그 뒤에 와서 전부 미분류로 샜다. 레코드 끝(다음 레코드 시작 또는 +6000)까지 봐야 한다.
+    let end=B.indexOf('{index:"',m.index);
+    const end2=B.indexOf("{_id:",m.index);
+    if(end2>=0&&(end<0||end2<end))end=end2;
+    if(end<0||end-start>6000)end=Math.min(B.length,start+6000);
+    const rec=B.slice(start,end);
     const nm=(rec.match(/[,{]name:"((?:[^"\\]|\\.)*)"/)||[])[1];
     if(!nm)continue;
     const has=f=>new RegExp("[,{]"+f+":").test(rec);
@@ -63,6 +69,21 @@ function extract(B){
   return {moves,abilities,items};
 }
 
+// 포케모음(=포챔스)에 없는 아이템을 DB에서 제거하는 코드까지 함께 내보낸다.
+// data.js 원본 무수정 원칙 유지 — 파일은 그대로 두고 로드 시점에 지운다.
+function emitItems(file,varName,dbPath,map,remove,title){
+  const header="// "+file+" — "+title+" 한글명 보정 + 포챔스에 없는 아이템 제거.\n"+
+    "// 출처: 포케모음(pokemoem.com, 포켓몬 챔피언스 한국어 데이터).\n"+
+    "// data.js 원본 무수정 원칙 → data.js 로드 후 이 파일을 로드하면 자기적용(패치 + 삭제).\n"+
+    "// 재생성: node scripts/build-ko-names.js\n";
+  const body="window."+varName+"="+JSON.stringify(map)+";\n"+
+    "window.ITEM_NOT_IN_GAME="+JSON.stringify(remove)+";\n"+
+    "(function(){if(typeof window===\"undefined\"||!window.DB)return;var T=window."+dbPath+";if(!T)return;\n"+
+    "for(var _k in window."+varName+"){var _o=T[_k];if(_o===undefined)continue;\n"+
+    "if(typeof _o===\"string\")T[_k]=window."+varName+"[_k];else _o.ko=window."+varName+"[_k];}\n"+
+    "for(var _i=0;_i<window.ITEM_NOT_IN_GAME.length;_i++)delete T[window.ITEM_NOT_IN_GAME[_i]];})();\n";
+  fs.writeFileSync(path.join(ROOT,file),header+body);
+}
 function emit(file,varName,dbPath,map,title){
   const header="// "+file+" — "+title+" 한글명 보정. 출처: 포케모음(pokemoem.com, 포켓몬 챔피언스 한국어 데이터).\n"+
     "// data.js 원본 무수정 원칙 → data.js 로드 후 이 파일을 로드하면 "+dbPath+"[key].ko를 패치(자기적용).\n"+
@@ -86,12 +107,12 @@ function emit(file,varName,dbPath,map,title){
   console.log("추출: 기술 "+Object.keys(KO.moves).length+" · 특성 "+Object.keys(KO.abilities).length+
               " · 아이템 "+Object.keys(KO.items).length);
 
-  const build=(dbObj,src,over,label)=>{
+  const build=(dbObj,src,over,label,missOut)=>{
     const idx={};for(const k in src)idx[norm(k)]=src[k];
     const fix={};let miss=0,same=0;
     for(const k in dbObj){
       const want=over[k]||idx[norm(k)];
-      if(!want){miss++;continue;}
+      if(!want){miss++;if(missOut)missOut.push(k);continue;}
       const v=dbObj[k],cur=(typeof v==="string")?v:v.ko;
       if(cur===want){same++;continue;}
       fix[k]=want;
@@ -99,12 +120,14 @@ function emit(file,varName,dbPath,map,title){
     console.log(label+": 보정 "+Object.keys(fix).length+" · 일치 "+same+" · 소스없음 "+miss);
     return fix;
   };
+  const itemMiss=[];
   const mFix=build(DB.moves,KO.moves,OVERRIDE.moves,"기술");
-  const iFix=build(DB.items,KO.items,OVERRIDE.items,"아이템");
+  const iFix=build(DB.items,KO.items,OVERRIDE.items,"아이템",itemMiss);
   const aFix=build(DB.abilities,KO.abilities,{},"특성(참고)");
   if(Object.keys(aFix).length)console.log("  ⚠ 특성 불일치 발견:",JSON.stringify(aFix));
+  console.log("  포챔스에 없어 제거할 아이템 "+itemMiss.length+"개: "+itemMiss.join(", "));
 
   emit("moves-ko-fix.js","MOVE_KO_FIX","DB.moves",mFix,"DB.moves");
-  emit("items-ko-fix.js","ITEM_KO_FIX","DB.items",iFix,"DB.items");
+  emitItems("items-ko-fix.js","ITEM_KO_FIX","DB.items",iFix,itemMiss,"DB.items");
   console.log("moves-ko-fix.js · items-ko-fix.js 재생성 완료");
 })().catch(e=>{console.error("실패:",e.message);process.exit(1);});

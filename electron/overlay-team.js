@@ -248,7 +248,10 @@ function readMonDetail(img,card,species,statTab){
     const provided=itemCandFor(species);                          // 채용률 held_item(pct 포함) + 종족 메가스톤 — 임계(3%)는 모듈이 적용
     if(provided.length){const it=SD.detectItem(img,card,DB,rt,provided);if(it&&it.key)item={key:it.key,ko:it.ko};}
   }catch(e){dlog("특성·기술·아이템 인식 오류: "+e.message,"err");}
-  return {tab:"ability",mega:(ms.isMega&&mega)?mega:null,megaStone:!!ms.isMega,ability,moves,item};
+  // 메가폼 확정 우선순위: ①스톤 이름 인식(X/Y까지 구분) > ②메가스톤 휴리스틱(원반+다색스월)+종족 메가폼
+  const stoneForme=megaFormeOfStone(item);
+  return {tab:"ability",mega:stoneForme||((ms.isMega&&mega)?mega:null),
+          megaStone:!!ms.isMega||!!stoneForme,ability,moves,item};
 }
 // usage 배열 [[key,pct]] → [{key,pct}] (pct 0~100 정규화). live percentage_value가 0~1이면 ×100.
 function usageList(arr){
@@ -262,10 +265,17 @@ function itemCandFor(species){
   const out=[],seen=new Set();
   const add=(k,pct)=>{if(!k||seen.has(k)||!DB.items[k])return;seen.add(k);const v=DB.items[k];out.push({key:k,ko:(typeof v==="string")?v:v.ko,pct});};
   const u=usageOf(species);if(u&&u.it)for(const o of usageList(u.it)||[])if(o.key!=="__mega")add(o.key,o.pct); // 임계(3%)는 모듈이 적용
-  const c=DB.creatures[species];
-  if(c&&c.formes)for(const f of c.formes)if(DB.creatures[f]&&DB.creatures[f].form==="mega")
+  // ⚠ form==="mega"로 거르면 안 됨 — 리자몽/라이츄 X·Y는 form이 "mega_x"/"mega_y"라 메가스톤이 통째로 누락됐다.
+  //    megaFormesOf(이름의 -Mega 기준)를 써서 X/Y/Z 변형까지 포함한다.
+  for(const f of megaFormesOf(species))
     for(const ik in DB.items)if(DB.items[ik].mega===f)add(ik,null);  // 메가스톤은 pct=null → 모듈이 항상 유지
   return out;
+}
+// 인식된 아이템이 메가스톤이면 그 스톤이 가리키는 메가폼(리자몽나이트X → Charizard-Mega-X).
+// 스톤 이름은 X/Y를 구분하므로 megaFormeOf(첫 메가폼 임의 선택)보다 정확한 근거다.
+function megaFormeOfStone(item){
+  const v=item&&item.key&&DB.items[item.key];
+  return (v&&v.mega&&DB.creatures[v.mega])?v.mega:null;
 }
 function mergeTeamDetails(sig,mons,img,rect){
   const team=findTeam(sig);if(!team){dlog("세트병합: 미등록 팀 → 스킵");return;} // 등록된 팀에만 세트 누적
