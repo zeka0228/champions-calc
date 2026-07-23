@@ -45,6 +45,11 @@ HUD 위로 마우스를 올리면 자동으로 드래그·조작 가능, <b>그 
 </div>
 <div id="status"></div>
 
+<h2>개발용 <span class="hint" style="font-size:11px">(디버깅·프레임 수집)</span></h2>
+<div class="hint">지금 캡처 중인 게임 화면을 PNG로 저장합니다 → <b>바탕화면/포챔스_캡처/</b>. 인식이 어긋난 프레임을 모아 개발에 활용해요.
+<span style="color:#ffd479">추후 안드로이드 이식 시 별도 처리 예정.</span></div>
+<button class="btn" id="capNow">📸 현 화면 캡처</button>
+
 <h2>진단 로그 <button class="btn" id="clearLog" style="font-size:11px;padding:3px 8px">지우기</button></h2>
 <div class="hint">팀 인식·스샷·세트 반영 흐름을 순서대로 기록합니다.</div>
 <div id="log"></div>
@@ -86,6 +91,8 @@ $("mySearch").addEventListener("input",e=>{
   }
 });
 $("reRecognize").onclick=()=>{ipcRenderer.send("to-overlay","force-recognize");$("status").textContent="상대 재인식 요청 — 선출 잠금 해제";};
+// [DEV/DEBUG] 현 화면 캡처 — 오버레이가 현 프레임을 저장(결과는 status/HUD 토스트로)
+$("capNow").onclick=()=>{ipcRenderer.send("to-overlay","capture-now");$("status").textContent="현 화면 캡처 요청…";};
 ipcRenderer.on("overlay-status",(e,t)=>{$("status").textContent=t;});
 
 // 진단 로그: overlay가 to-control "diag"로 보낸 라인을 시각별로 누적(최근 200줄)

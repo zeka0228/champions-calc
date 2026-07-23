@@ -134,6 +134,17 @@ ipcRenderer.on("force-recognize",()=>{
   state.lastHash=null;tick(true);
   toast("재인식 — 선출 잠금 해제");
 });
+// [DEV/DEBUG] 현 화면 캡처 — 지금 캡처 중인 게임 프레임을 PNG로 저장(인식 오류 프레임 수집·디버깅용).
+// gitignore된 capture.local.js(데이터셋 자동 캡처)와 별개로, 설정창 버튼으로 아무 때나 1장 저장.
+// ⚠ 추후 마이그레이션(M5 안드로이드) 시 재구현 대상 — Electron 데스크톱 파일 저장(main의 save-debug-capture)에 의존.
+ipcRenderer.on("capture-now",()=>{
+  const f=grabFrame();
+  if(!f){toast("캡처할 화면이 없어요 — 먼저 설정 창에서 게임 창을 선택하세요");return;}
+  try{ipcRenderer.send("save-debug-capture",{dataURL:f.cv.toDataURL("image/png"),screen:state.lastScreen});}
+  catch(err){toast("현 화면 캡처 실패: "+err.message);}
+});
+// main → HUD 토스트(저장 결과 등, 게임 위에 표시)
+ipcRenderer.on("toast",(e,t)=>toast(t));
 
 // ===== 메인 루프 (~1.2초, 변화 없으면 스킵) =====
 function grabFrame(){
