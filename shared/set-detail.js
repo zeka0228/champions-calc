@@ -20,22 +20,78 @@ const NW=128,NH=24;                        // 형태 비교용 정규화 그리�
 function px(img,x,y){const i=(y*img.width+x)*4;return[img.data[i],img.data[i+1],img.data[i+2]];}
 const isWhite=(r,g,b)=>r>180&&g>180&&b>180;
 
-// mask(w*h, 1=잉크) → 타이트 bbox → 높이 NH로 스케일 → NW×NH 좌측정렬 그리드. 이름 길이는 폭으로 반영됨.
+// mask(w*h, 1=잉크) → 타이트 bbox → 높이 NH로 스케일 → NW×NH 좌측정렬 그리드.
+// mask/box를 함께 들고 다닌다(음절 분할이 원본 해상도에서 잘라야 정확해서).
 function rasterize(mask,w,h){
   let minx=w,maxx=-1,miny=h,maxy=-1;
   for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(mask[y*w+x]){if(x<minx)minx=x;if(x>maxx)maxx=x;if(y<miny)miny=y;if(y>maxy)maxy=y;}
   const grid=new Uint8Array(NW*NH);
-  if(maxx<0)return {grid,w:0};
-  const bw=maxx-minx+1,bh=maxy-miny+1,sw=Math.max(1,Math.min(NW,Math.round(NH*bw/bh)));
+  if(maxx<0)return {grid,w:0,raw:0,mask,mw:w,mh:h,box:null};
+  const bw=maxx-minx+1,bh=maxy-miny+1,raw=Math.round(NH*bw/bh);
+  const sw=Math.max(1,Math.min(NW,raw));
   for(let ny=0;ny<NH;ny++)for(let nx=0;nx<sw;nx++){
     const sx=minx+Math.floor(nx*bw/sw),sy=miny+Math.floor(ny*bh/NH);
     grid[ny*NW+nx]=mask[sy*w+sx]?1:0;}
-  return {grid,w:sw};
+  return {grid,w:sw,raw,mask,mw:w,mh:h,box:{x0:minx,y0:miny,bw,bh}};
 }
-// 형태 유사도: IoU(겹침/합집합). 길이 다르면 뒤쪽 열이 안 겹쳐 자연 감점 → 음절수 신호 포함.
+// 형태 유사도: IoU(겹침/합집합). 단독으로는 변별력이 약해 아래 음절 비교의 보조로만 남긴다.
 function similarity(a,b){let inter=0,uni=0;
   for(let i=0;i<NW*NH;i++){if(a.grid[i]||b.grid[i]){uni++;if(a.grid[i]&&b.grid[i])inter++;}}
   return uni?inter/uni:0;}
+
+// ── 음절 단위 비교 ────────────────────────────────────────────────────────
+// 단어를 통째로 겹치면 "섀도펀치 vs 섀도클로"처럼 앞 음절이 같은 쌍에서 공통부가 점수를 채워
+// 정작 다른 음절("펀치"/"클로")의 차이가 묻힌다. 한글은 음절이 등폭 블록이므로
+// **후보 이름의 음절수만큼 양쪽 잉크 bbox를 등분**해 음절별로 비교한다.
+// 음절수가 틀린 후보는 게임 글자가 엉뚱한 위치에서 잘려 전 음절이 무너짐 → 길이 검사도 겸한다.
+const SYL=20;                       // 음절 슬라이스 정규화 크기(SYL×SYL)
+// 문자 폭 가중: 한글은 전각(1), 라틴·숫자는 반각(0.5)
+function charWeights(str){return Array.from(str,ch=>/[가-힣]/.test(ch)?1:0.5);}
+// bbox를 가중치 비율대로 등분 → 각 조각을 SYL×SYL로 정규화 + 블러(1~2px 어긋남 허용).
+// 게임쪽 래스터는 후보마다 재사용되므로 음절수별로 캐시한다.
+function sylGrids(R,weights){
+  if(!R.box)return null;
+  const key=weights.join(",");
+  if(!R._syl)R._syl={};
+  if(R._syl[key])return R._syl[key];
+  const b=R.box,tot=weights.reduce((s,v)=>s+v,0),out=[];let acc=0;
+  for(const wt of weights){
+    const xa=b.x0+Math.round(b.bw*acc/tot);acc+=wt;
+    const xb=b.x0+Math.round(b.bw*acc/tot),sw=Math.max(1,xb-xa);
+    const g=new Uint8Array(SYL*SYL);
+    for(let ny=0;ny<SYL;ny++)for(let nx=0;nx<SYL;nx++){
+      const sx=Math.min(R.mw-1,xa+Math.floor(nx*sw/SYL)),sy=b.y0+Math.floor(ny*b.bh/SYL);
+      g[ny*SYL+nx]=R.mask[sy*R.mw+sx]?1:0;}
+    out.push(blurSyl(g));
+  }
+  R._syl[key]=out;
+  return out;
+}
+// 3×3 박스 블러 — 얇은 한글 획이 1~2px만 어긋나도 이진 겹침이 0이 되는 걸 막는다.
+function blurSyl(g){
+  const t=new Float32Array(SYL*SYL),o=new Float32Array(SYL*SYL);
+  for(let y=0;y<SYL;y++)for(let x=0;x<SYL;x++){let s=0,n=0;
+    for(let d=-1;d<=1;d++){const q=x+d;if(q>=0&&q<SYL){s+=g[y*SYL+q];n++;}}t[y*SYL+x]=s/n;}
+  for(let y=0;y<SYL;y++)for(let x=0;x<SYL;x++){let s=0,n=0;
+    for(let d=-1;d<=1;d++){const q=y+d;if(q>=0&&q<SYL){s+=t[q*SYL+x];n++;}}o[y*SYL+x]=s/n;}
+  return o;
+}
+// 소프트 Dice(겹침 비중) — 블러된 실수 마스크용. IoU보다 부분 일치에 관대.
+function diceSyl(a,b){let inter=0,sa=0,sb=0;
+  for(let i=0;i<SYL*SYL;i++){inter+=Math.min(a[i],b[i]);sa+=a[i];sb+=b[i];}
+  return (sa+sb)>0?2*inter/(sa+sb):0;}
+// 최종 점수 = 음절 Dice의 **평균 × 최솟값**.
+// 평균만 쓰면 공통 음절이 오답을 띄우고(섀도클로가 섀도펀치를 이김), 최솟값만 쓰면 margin이 얇다.
+// 곱하면 "전반적으로 닮았고 + 크게 어긋난 음절이 하나도 없음"을 동시에 요구한다.
+// 검증(실프레임 정답 4건): 4/4 적중, 최소 margin 17%, 정답 점수 0.49~0.61.
+function score(gameRaster,candRaster,name){
+  const w=charWeights(name);
+  const a=sylGrids(gameRaster,w),b=sylGrids(candRaster,w);
+  if(!a||!b||!a.length)return 0;
+  let sum=0,mn=1;
+  for(let i=0;i<a.length;i++){const d=diceSyl(a[i],b[i]);sum+=d;if(d<mn)mn=d;}
+  return (sum/a.length)*mn;
+}
 
 // 이미지 영역(절대픽셀)에서 흰 글자 → mask → rasterize
 function extractText(img,x0,x1,y0,y1){
@@ -85,7 +141,7 @@ function matchByRender(gameRaster,candidates,renderText){
     let rr;try{rr=renderText(cand.ko);}catch(e){continue;}
     if(!rr||!rr.mask)continue;
     const cr=rasterize(rr.mask,rr.width,rr.height);
-    const s=similarity(gameRaster,cr);
+    const s=score(gameRaster,cr,cand.ko);
     if(s>bs){second=bs;bs=s;best=cand;}else if(s>second)second=s;
   }
   if(!best)return null;
@@ -100,11 +156,15 @@ function rankByRender(gameRaster,candidates,renderText){
   for(const cand of candidates){
     let rr;try{rr=renderText(cand.ko);}catch(e){continue;}
     if(!rr||!rr.mask)continue;
-    out.push({...cand,score:similarity(gameRaster,rasterize(rr.mask,rr.width,rr.height))});
+    out.push({...cand,score:score(gameRaster,rasterize(rr.mask,rr.width,rr.height),cand.ko)});
   }
   out.sort((a,b)=>b.score-a.score);
   return out;
 }
+// 특성 이름 x밴드 시작 — 기술명과 같은 결함이 있었다. 실측 특성 글자는 0.1233~에서 시작하는데
+// 0.13에서 잘라 첫 글자 좌측 약 1/4이 날아갔다. 0.115 왼쪽엔 잉크가 거의 없어(1/293) 0.117이 안전.
+// (아이템 행은 왼쪽에 아이콘 흰 픽셀이 148/293로 실재 → 아이템 밴드 0.125는 그대로 둔다.)
+const ABILX0=0.117;
 function detectAbility(img,card,species,DB,renderText){
   const cands=abilityCandidates(species,DB);
   if(cands.length<=1)return cands[0]?{...cands[0],score:1}:null;
@@ -112,7 +172,7 @@ function detectAbility(img,card,species,DB,renderText){
   const row=abilityRowBand(rows);             // 이름(최고 행) 바로 아래
   if(!row)return null;
   const CW=card.x1-card.x0;
-  const g=extractText(img,card.x0+Math.round(CW*0.13),card.x0+Math.round(CW*0.47),row[0]-1,row[1]+2);
+  const g=extractText(img,card.x0+Math.round(CW*ABILX0),card.x0+Math.round(CW*0.47),row[0]-1,row[1]+2);
   if(!g.w)return null;
   return matchByRender(g,cands,renderText);
 }
@@ -125,7 +185,12 @@ const TYPE_COLORS={Fire:[232,40,40],Water:[40,128,240],Grass:[64,160,40],Electri
   Fighting:[255,128,0],Poison:[144,64,204],Ground:[144,80,32],Flying:[128,184,240],Psychic:[240,64,120],
   Bug:[146,162,29],Rock:[176,168,128],Ghost:[112,64,112],Dragon:[80,96,224],Steel:[96,160,184],Dark:[80,64,64],
   Fairy:[240,112,240],Normal:[160,160,160]};   // Normal=회색(실측), Dark=저채도 — 아래 필터가 저채도 허용
-const MICONX=[0.600,0.675],MNAMEX=[0.685,0.985];   // 카드폭 비율: 속성아이콘 / 기술이름 x밴드
+// 카드폭 비율: 속성아이콘 / 기술이름 x밴드.
+// ⚠ MNAMEX[0]은 원래 0.685였는데 **기술명 첫 글자를 100% 잘라먹고 있었다**(ERR-010).
+//   실측(능력탭 49프레임·1176행): 속성아이콘 흰글리프는 ≤0.6497에서 끝나고 기술명은 0.6715~에서 시작 →
+//   그 사이 [0.6497, 0.6715]가 빈 구간이므로 중앙값 0.661을 경계로 잡는다.
+//   오른쪽 0.985는 유지 — 0.993~0.999에 카드 테두리 아티팩트(7px 램프)가 있어 넓히면 오염된다.
+const MICONX=[0.600,0.675],MNAMEX=[0.661,0.985];
 
 // 4개 기술 행 검출: 기술이름(흰 텍스트, 항상 존재 — 저채도 타입 아이콘은 놓치므로 아이콘 대신 이름으로).
 // 워터마크(짧음)·드리프트 bleed(불규칙 간격) 잡음 → 높이 필터 + "4-윈도우 최소 간격분산"으로 실기술 4행 선택.
@@ -260,6 +325,6 @@ function makeCanvasRenderer(font){
   };
 }
 
-return {NW,NH,rasterize,similarity,extractText,leftTextRows,abilityRowBand,itemRowBand,abilityCandidates,matchByRender,rankByRender,detectAbility,
+return {NW,NH,SYL,rasterize,similarity,score,charWeights,sylGrids,diceSyl,extractText,leftTextRows,abilityRowBand,itemRowBand,abilityCandidates,matchByRender,rankByRender,detectAbility,
         moveRows,detectMoveType,moveCandidates,detectMoves,itemCandidates,detectItem,makeCanvasRenderer};
 });
