@@ -36,7 +36,10 @@ function topSet(id,formeForce){
     forme=DB.items[item].mega;
   }
   // 메가폼 강제(복수 메가 X/Y 비교용): usage 기반 forme를 지정 메가폼으로 override(종족값·타입만 바뀜, 세트는 usage 유지)
-  if(formeForce&&DB.creatures[formeForce]&&/-Mega/.test(formeForce))forme=formeForce;
+  // "none" = 메가 배제: usage 1위 아이템이 메가스톤이어도 원종 종족값·타입으로 계산
+  //   (상대는 경기당 메가 1회 → 다른 상대가 이미 썼거나, 유저가 HUD에서 메가를 끈 경우)
+  if(formeForce==="none")forme=null;
+  else if(formeForce&&DB.creatures[formeForce]&&/-Mega/.test(formeForce))forme=formeForce;
   const nature=u&&u.na&&u.na[0]?u.na[0][0]:"Serious";
   const pts=u&&u.sp&&u.sp[0]?ptsFromSp(u.sp[0][0]):{};
   const ability=u&&u.ab&&u.ab[0]?u.ab[0][0]:(c.ab&&(c.ab["0"]||c.ab.H))||"";

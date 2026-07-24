@@ -59,6 +59,14 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
 .megasel{display:flex;gap:6px;margin:5px 0}
 .megabtn{flex:1;background:#20182e;border:1px solid #4a3a6e;color:#b7a8d8;font-size:11px;font-weight:600;padding:4px 6px;border-radius:6px;cursor:pointer}
 .megabtn.act{background:#5a3ca8;border-color:#9a7cff;color:#fff}
+/* 비메가(원종) 버튼 = 중립색, 메가 버튼과 시각적으로 구분 */
+.megabtn.plain{background:#1a2028;border-color:#2e3947;color:#93a1b0}
+.megabtn.plain.act{background:#2b3949;border-color:#4da3ff;color:#e8edf2}
+.megabtn:disabled{opacity:.45;cursor:default}
+/* 메가 소진(경기당 1회) 안내 */
+.megaspent{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#facc15;
+  background:#3a3312;border-radius:6px;padding:4px 7px;margin:4px 0}
+.megaspent.ok{color:#c9b8ff;background:#2a2140}
 .dvstats{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;margin:7px 0}
 .dvst{display:flex;align-items:baseline;gap:6px;font-size:12px}
 .dvlab{width:44px;color:#93a1b0}

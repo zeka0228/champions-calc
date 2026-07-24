@@ -23,14 +23,34 @@ function oppBattleIds(){const ids=state.oppTeam.slice();
 function koWithMega(id){const b=baseOf(id),bk=DB.creatures[b]?DB.creatures[b].ko:id;
   return /-Mega/.test(id)?(DB.creatures[id]&&DB.creatures[id].ko||bk):bk;}
 
+// ===== 상대 메가 판정(경기당 1회) =====
+// 규칙: 상대는 한 매치에 메가진화를 한 번만 쓴다 → 필드에서 한 번 확인되면(state.oppMegaUsed)
+//       그 종족만 메가로 확정하고 나머지 상대는 메가를 배제한다(스피드·데미지·역할 전부 원종 기준).
+// 우선순위: 소진 배제 > 유저 토글(HUD 비메가/메가 버튼) > 필드 확인 > 픽률 1위 메가
+// 반환: 표시·계산에 쓸 메가폼 id, 또는 null(메가 아님)
+function oppMegaOf(base,onField){
+  const megas=megaFormesOf(base);if(!megas.length)return null;
+  const used=state.oppMegaUsed,usedBase=used?baseOf(used):null;
+  if(usedBase&&usedBase!==base)return null;                  // 다른 상대가 이미 메가 사용 → 이 종족은 배제
+  if(usedBase===base)return megas.includes(used)?used:null;  // 실제로 쓴 그 폼으로 확정(토글보다 우선)
+  const pick=state.oppMegaSel[base];
+  if(pick==="off")return null;                               // 유저가 껐음
+  if(pick&&megas.includes(pick))return pick;                 // 유저가 특정 폼 지정(X/Y)
+  return onField||oppLikelyMega(base)||null;
+}
+// analyzer(topSet/firstStrike/koMatrix/estimateRole)에 넘길 forme 인자.
+// null을 그대로 넘기면 "override 없음"=usage 기반 메가가 그대로 먹으므로, 메가 배제는 "none" 센티널로 명시해야 한다.
+const formeArg=m=>m||"none";
+
 // ===== 매칭 화면: 새 매치 진입 1회 → 선출 잠금 자동 해제 =====
 function onMatchmakingEnter(){
   state.oppLocked=false;state.oppCur=null;state.oppTeam=[];
+  state.oppMegaSel={};state.oppMegaUsed=null;   // 메가 토글·소진은 매치 단위 상태
   $("content").innerHTML='<div class="small">매칭 중… 선출 화면을 기다립니다</div>';
   toast("새 매치 감지 — 선출 잠금 해제");
 }
 // Alt+R/재인식 버튼 → 선출 잠금 해제(코어의 force-recognize가 등록된 화면 모듈의 reset을 호출)
-function resetOpp(){state.oppLocked=false;state.oppCur=null;}
+function resetOpp(){state.oppLocked=false;state.oppCur=null;state.oppMegaSel={};state.oppMegaUsed=null;}
 
 // ===== 선출 화면: 상대 6마리 매칭 → 역할 추정 =====
 // 프레임 독립: analyze()가 게임영역 기준으로 검출한 카드 지오메트리(절대 좌표)를
@@ -66,14 +86,17 @@ async function onSelect(f,a){
 const ROLE_CLS=r=>/물리/.test(r.role)&&/어태커/.test(r.role)?"phys":/특수 어태커|양면/.test(r.role)?"spec":/막이/.test(r.role)?"wall":"sup";
 function renderSelect(){
   const el=$("content");el.innerHTML="<h3>상대 팀 역할 추정</h3>";
+  const used=state.oppMegaUsed,usedBase=used?baseOf(used):null;
+  if(usedBase)el.innerHTML+=`<div class="megaspent">메가 소진 — <b>${koWithMega(used)}</b>가 사용 · 나머지는 메가 배제`
+    +` <button class="tbtn mini" onclick="__oppmegareset()">해제</button></div>`;
   for(const o of state.oppMons){
     const id=o.id,base=baseOf(id),c=DB.creatures[id];if(!c)continue;
-    const mega=oppLikelyMega(id);                       // 유력 메가폼(채용률1위 메가스톤) — 있으면 메가 기준 표시
+    const mega=oppMegaOf(base,null);                    // 메가 1회 규칙 반영(다른 상대가 썼으면 null) + 유력 메가폼
     const sc=mega?(DB.creatures[mega]||c):c;            // 메가면 메가 스프라이트/이름
-    const r=A.estimateRole(base);                       // estimateRole은 topSet(usage)로 메가 종족값 자동 반영
+    const r=A.estimateRole(base,formeArg(mega));        // 메가 배제 시 원종 종족값 기준으로 역할 추정
     const d=document.createElement("div");d.className="roleRow";
     d.innerHTML=`<img src="../assets/sprites/${sc.sprite}.webp" onerror="this.style.visibility='hidden'">
-      <div><span class="nm">${mega?sc.ko:c.ko}</span>${mega?' <span class="megab">MEGA</span>':""} <span class="rl ${ROLE_CLS(r)}">${r.role}</span>
+      <div><span class="nm">${mega?sc.ko:c.ko}</span>${mega?` <span class="megab">MEGA${base===usedBase?" ✔":""}</span>`:""} <span class="rl ${ROLE_CLS(r)}">${r.role}</span>
       <span class="small">${r.confidence}%</span>
       <div class="tags">${r.tags.join(" · ")||"-"}</div></div>`;
     el.appendChild(d);
@@ -151,9 +174,13 @@ async function onBattle(f,a){
       const r=identifyOppIcon(region,barH,oppBattleIds()); // 선출 6마리 + 메가폼(실제 메가진화 아이콘 인식)
       if(r&&r.id!==state.oppCur){
         if(CAP)CAP.battle(ipcRenderer,f.cv,r.id,r.score,DB); // [로컬] 배틀 프레임 캡처(식별 변경 시)
-        if(baseOf(r.id)!==baseOf(state.oppCur||""))state.oppMegaSel=null; // 다른 상대로 바뀌면 메가 선택 초기화
-        state.oppCur=r.id;await fetchLive(baseOf(r.id));renderBattle();
-        toast("상대: "+koWithMega(r.id));
+        state.oppCur=r.id;
+        // 상대 메가는 경기당 1회 — 필드에서 메가폼이 확인되는 즉시 기록해 남은 상대의 메가를 배제한다.
+        // (메가 선택 토글은 종족별로 유지되므로 상대가 바뀌어도 초기화하지 않는다.)
+        const justMega=/-Mega/.test(r.id)&&state.oppMegaUsed!==r.id;
+        if(justMega){state.oppMegaUsed=r.id;dlog("상대 메가 소진: "+koWithMega(r.id)+" — 남은 상대 메가 배제","ok");}
+        await fetchLive(baseOf(r.id));renderBattle();
+        toast("상대: "+koWithMega(r.id)+(justMega?" — 메가 소진(남은 상대 배제)":""));
       }
     }
   }catch(err){toast("상대 인식 오류: "+err.message);}
@@ -169,31 +196,40 @@ function renderBattle(){
   const megas=megaFormesOf(opp);                          // 이 종족의 메가폼(0/1/2개)
   const onField=/-Mega/.test(state.oppCur)?state.oppCur:null; // 필드에서 실제 메가진화 확인된 폼
   const defMega=oppLikelyMega(opp);                       // 픽률 1위 기본 메가
-  let curMega=null;                                       // 표시/계산 메가폼: 유저선택 > 필드확인 > 픽률기본
-  if(megas.length)curMega=(state.oppMegaSel&&megas.includes(state.oppMegaSel))?state.oppMegaSel:(onField||defMega||null);
+  const used=state.oppMegaUsed,usedBase=used?baseOf(used):null;
+  const spent=!!usedBase&&usedBase!==opp;                 // 다른 상대가 메가를 써버림 → 이 상대는 메가 불가
+  const confirmed=usedBase===opp;                         // 이 상대가 실제로 메가진화한 것이 확인됨
+  const curMega=oppMegaOf(opp,onField);                   // 표시/계산 메가폼(소진 > 토글 > 필드 > 픽률)
   const oppKo=curMega?(DB.creatures[curMega]&&DB.creatures[curMega].ko||DB.creatures[opp].ko):(DB.creatures[opp]?DB.creatures[opp].ko:state.oppCur);
   // 내 쪽도 필드에서 메가진화가 확인되면(myForme) 그 종족값·타입 기준으로 계산.
   const myForme=(state.myForme&&DB.creatures[state.myForme])?state.myForme:null;
   const myTop=A.topSet(my,myForme);
   const myStats=E.calcStats(DB.creatures[myTop.cfg.forme||my],myTop.cfg.nature,myTop.cfg.pts);
-  const fsRes=A.firstStrike(myStats.spe,opp,{forme:curMega});
+  const fsRes=A.firstStrike(myStats.spe,opp,{forme:formeArg(curMega)}); // 메가 OFF면 "none"으로 원종 기준 계산
   const lbl={neu:"무보정",semi:"준속",mx:"최속",scarf:"스카프",est:"픽률1위"};
   const myKo=(myForme?DB.creatures[myForme].ko:DB.creatures[my].ko)+(myForme?' <span class="megab">MEGA</span>':"");
   let html=`<h3>${myKo} vs ${oppKo}${curMega?' <span class="megab">MEGA</span>':""}</h3>`;
-  if(megas.length>=2){                                    // 복수 메가(리자몽·라이츄 X/Y) → 즉시 전환 비교 토글
-    html+=`<div class="megasel">`;
+  if(megas.length){                                       // 메가폼이 있는 상대 → 메가 켬/끔 토글(복수 메가면 X/Y까지)
+    const dis=(spent||confirmed)?" disabled":"";          // 소진(불가)·필드 확인(확정)이면 잠금
+    html+=`<div class="megasel"><button class="megabtn plain${curMega?"":" act"}"${dis} onclick="__oppmega('off')">비메가</button>`;
     for(const m of megas){const mk=DB.creatures[m]?DB.creatures[m].ko:m;
-      html+=`<button class="megabtn${m===curMega?" act":""}" onclick="__oppmega('${m}')">${mk}${m===defMega?" ★":""}</button>`;}
+      html+=`<button class="megabtn${m===curMega?" act":""}"${dis} onclick="__oppmega('${m}')">${mk}${m===onField?" ●":m===defMega?" ★":""}</button>`;}
     html+=`</div>`;
+    if(spent)html+=`<div class="megaspent">상대 메가 소진 — <b>${koWithMega(used)}</b>가 사용 · 이 상대는 메가 불가`
+      +` <button class="tbtn mini" onclick="__oppmegareset()">해제</button></div>`;
+    else if(confirmed)html+=`<div class="megaspent ok">메가진화 확인(●) — 남은 상대는 메가 배제`
+      +` <button class="tbtn mini" onclick="__oppmegareset()">해제</button></div>`;
   }
-  html+=`<div class="small">내 실속 ${myStats.spe} (픽률1위 세트 기준 — 추후 내 세트 연동)${curMega?" · 상대 "+(onField?"메가(필드)":"메가 기준"):""}</div><div class="spd">`;
+  html+=`<div class="small">내 실속 ${myStats.spe} (픽률1위 세트 기준 — 추후 내 세트 연동)`
+    +(curMega?" · 상대 "+(confirmed?"메가(필드 확인)":"메가 기준"):(megas.length?" · 상대 비메가 기준":""))
+    +`</div><div class="spd">`;
   for(const k of["neu","semi","mx","scarf","est"]){
     const s=fsRes.scenarios[k];if(s.spe==null)continue;
     const c=s.first==="me"?"win":s.first==="opp"?"lose":"tie";
     html+=`<span class="${c}">${lbl[k]} ${s.spe}</span>`;
   }
   html+=`</div><div class="small">${fsRes.estNote}</div>`;
-  const km=A.koMatrix(myTop.cfg,myTop.atkMoves,opp,null,curMega);
+  const km=A.koMatrix(myTop.cfg,myTop.atkMoves,opp,null,formeArg(curMega));
   if(km){
     html+=`<h3 style="margin-top:8px">상대 → 나 (위험한 순)</h3>`;
     for(const l of km.theirs.slice(0,4))
@@ -204,8 +240,13 @@ function renderBattle(){
   }
   el.innerHTML=html;
 }
-// 복수 메가(X/Y) 선택 → 그 메가 종족값·타입 기준으로 스피드·데미지 재계산(즉시 비교)
-window.__oppmega=(m)=>{state.oppMegaSel=m;renderBattle();};
+// 메가 토글: "off"=비메가(원종 기준) / 메가폼 id=그 폼 기준(복수 메가 X/Y 즉시 비교). 종족별로 기억한다.
+window.__oppmega=(m)=>{const opp=baseOf(state.oppCur||"");if(!opp)return;
+  state.oppMegaSel[opp]=m;renderBattle();};
+// 메가 소진 기록 해제(아이콘 오인식으로 잘못 잡혔을 때 수동 복구)
+window.__oppmegareset=()=>{state.oppMegaUsed=null;
+  if(state.lastScreen==="select")renderSelect();else renderBattle();
+  toast("메가 소진 기록 해제");};
 
 // 배틀: "지금 출전한 내 포켓몬"을 좌하단 이름바 아이콘으로 자동 식별.
 // 상대 경로(identifyOppIcon)를 그대로 쓰던 이전 방식은 실배틀 프레임에서 사실상 동작하지 않았다:
