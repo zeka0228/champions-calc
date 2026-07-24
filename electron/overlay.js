@@ -71,7 +71,9 @@ function usageOf(id){return usagePick(id)||usagePick(baseOf(id));}
 
 // ===== 상태 =====
 const $=id=>document.getElementById(id);
-const state={oppTeam:[],oppMons:[],oppSig:null,oppCur:null,oppMegaSel:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
+// oppMegaSel = 상대 메가 표시 토글(종족별): {종족: 메가폼id | "off"} — 없으면 자동(필드확인>픽률1위)
+// oppMegaUsed = 이 매치에서 상대가 실제로 쓴 메가폼(경기당 1회) — 있으면 나머지 상대는 메가 배제
+const state={oppTeam:[],oppMons:[],oppSig:null,oppCur:null,oppMegaSel:{},oppMegaUsed:null,myMon:null,lastHash:null,lastScreen:"other",busy:false,oppLocked:false};
 // [로컬 전용] 데이터셋 캡처는 gitignore된 capture.local.js 가 있을 때만 활성(클린 체크아웃엔 없음 → 무동작).
 let CAP=null; try{CAP=require("./capture.local.js");}catch(e){}
 let assetList=null;
