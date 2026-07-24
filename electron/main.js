@@ -67,6 +67,24 @@ ipcMain.on("overlay-focus",(e,v)=>{
   if(v)overlayWin.focus();
 });
 
+// [DEV/DEBUG] 현 화면 캡처 저장 — 오버레이가 보낸 현 프레임 PNG를 바탕화면/포챔스_캡처/ 에 저장.
+// 설정창 "현 화면 캡처" 버튼 → to-overlay "capture-now" → overlay가 프레임 인코딩 → 여기서 파일 기록.
+// ⚠ 추후 마이그레이션(M5 안드로이드) 시 재구현 대상 — 데스크톱 파일시스템 저장에 의존.
+ipcMain.on("save-debug-capture",(e,{dataURL,screen})=>{
+  let msg;
+  try{
+    const dir=path.join(app.getPath("desktop"),"포챔스_캡처");
+    fs.mkdirSync(dir,{recursive:true});
+    const t=new Date(),p=n=>String(n).padStart(2,"0");
+    const stamp=`${t.getFullYear()}${p(t.getMonth()+1)}${p(t.getDate())}_${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`;
+    const name=`capture_${screen||"unknown"}_${stamp}.png`;
+    fs.writeFileSync(path.join(dir,name),Buffer.from(dataURL.replace(/^data:image\/png;base64,/,""),"base64"));
+    msg="현 화면 캡처 저장: 포챔스_캡처/"+name;
+  }catch(err){msg="현 화면 캡처 저장 실패: "+err.message;}
+  if(controlWin)controlWin.webContents.send("overlay-status",msg);
+  if(overlayWin)overlayWin.webContents.send("toast",msg); // HUD에도 결과 표시
+});
+
 app.whenReady().then(()=>{
   try{DIAG_LOG=path.join(app.getPath("desktop"),"포챔스_diag.log");   // 세션마다 새로 시작
     fs.writeFileSync(DIAG_LOG,`=== 세션 시작 ${new Date().toISOString()} ===\n`);}catch(e){DIAG_LOG=null;}
